@@ -1,0 +1,769 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<title>Free City Wi-Fi</title>
+<style>
+:root{--bg:#0b1020;--ink:#e8ecff;--blue:#1a73e8}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);font-family:system-ui,"Segoe UI",Roboto,sans-serif;overflow:hidden;touch-action:none;user-select:none;-webkit-user-select:none}
+#game{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);display:none}
+.screen{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;padding:16px}
+#portal{background:linear-gradient(#cfe8ff,#eef6ff);color:#16233b}
+.card{width:100%;max-width:380px;background:#fff;border-radius:22px;padding:28px 22px 22px;text-align:center;box-shadow:0 10px 40px rgba(20,60,120,.18)}
+.card h1{margin:10px 0 4px;font-size:24px}
+.card p{margin:6px 0 14px;color:#51607a;font-size:15px;line-height:1.35}
+.card small{display:block;margin-top:14px;color:#8a97ad;font-size:12px;line-height:1.35}
+button{font:inherit;font-weight:600;font-size:17px;color:#fff;background:var(--blue);border:0;border-radius:14px;padding:14px 22px;width:100%;cursor:pointer}
+button:active{transform:scale(.98)}
+.bar{height:8px;border-radius:4px;background:#e3ebf7;overflow:hidden;margin:16px 0 8px}
+.bar i{display:block;height:100%;width:0;background:var(--blue);transition:width .9s ease}
+#reveal{font-size:54px}
+[hidden]{display:none!important}
+
+/* кнопки управления на экране */
+#pad{position:fixed;left:0;right:0;bottom:0;display:none;justify-content:space-between;align-items:flex-end;padding:0 18px calc(20px + env(safe-area-inset-bottom));pointer-events:none}
+.padbtn{pointer-events:auto;width:104px;height:104px;padding:0;border-radius:50%;border:3px solid;background:rgba(255,255,255,.14);color:#fff;font-size:36px;line-height:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;touch-action:none;backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px)}
+.padbtn span{font-size:13px;font-weight:700;letter-spacing:.02em}
+.padbtn.on{background:rgba(255,255,255,.38);transform:scale(.95)}
+#btnShoot{border-color:rgba(143,227,255,.9)}
+#btnJump{border-color:rgba(255,204,51,.95)}
+</style>
+</head>
+<body>
+
+<!-- Экран 1: «страница входа в городской Wi-Fi» (captive portal) -->
+<div id="portal" class="screen">
+  <div class="card">
+    <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="#1a73e8" stroke-width="2" stroke-linecap="round"><path d="M2 8.8a15 15 0 0 1 20 0"/><path d="M5 12.5a10 10 0 0 1 14 0"/><path d="M8.5 16a5 5 0 0 1 7 0"/><circle cx="12" cy="19.3" r="1.2" fill="#1a73e8"/></svg>
+    <h1 id="title">Free City Wi-Fi</h1>
+    <p id="sub">Бесплатный интернет для гостей города</p>
+    <div id="steps" hidden>
+      <div class="bar"><i id="fill"></i></div>
+      <p id="stepText">&nbsp;</p>
+    </div>
+    <div id="reveal" hidden>🐧</div>
+    <button id="connect">Подключиться</button>
+    <button id="play" hidden>Играть</button>
+    <small id="fine">Нажимая «Подключиться», вы соглашаетесь, что сейчас будет весело.</small>
+  </div>
+</div>
+
+<canvas id="game"></canvas>
+
+<div id="pad">
+  <button class="padbtn" id="btnShoot" aria-label="Снежок">❄<span>СНЕЖОК</span></button>
+  <button class="padbtn" id="btnJump" aria-label="Прыжок">▲<span>ПРЫЖОК</span></button>
+</div>
+
+<script>
+(() => {
+'use strict';
+
+/* ---------- Экран-розыгрыш ---------- */
+const $ = s => document.querySelector(s);
+let active = false;
+// телефон/планшет (палец) → кнопки на экране; компьютер (мышь) → клавиши A, D, пробел
+const isTouch = matchMedia('(pointer: coarse)').matches || (navigator.maxTouchPoints > 0 && !matchMedia('(pointer: fine)').matches);
+
+$('#connect').addEventListener('click', () => {
+  $('#connect').hidden = true;
+  $('#steps').hidden = false;
+  const steps = [
+    ['Ищем сеть…', 25],
+    ['Получаем IP-адрес…', 55],
+    ['Проверяем скорость…', 85],
+    ['Скорость: 0 Мбит/с…', 100],
+  ];
+  let i = 0;
+  const next = () => {
+    if (i >= steps.length) return reveal();
+    $('#stepText').textContent = steps[i][0];
+    $('#fill').style.width = steps[i][1] + '%';
+    i++;
+    setTimeout(next, 950);
+  };
+  next();
+});
+
+function reveal() {
+  $('#steps').hidden = true;
+  $('#reveal').hidden = false;
+  $('#title').textContent = 'Подтвердить';
+  $('#sub').textContent = 'Подтвердите, что вы не робот. Сыграйте в эту игру: мы проверим, что вы нажимаете кнопки как настоящий человек.';
+  $('#play').hidden = false;
+  $('#fine').textContent = 'Ничего не скачивается, данные не собираются. Просто игра.';
+}
+
+$('#play').addEventListener('click', () => {
+  $('#portal').hidden = true;
+  cv.style.display = 'block';
+  $('#pad').style.display = isTouch ? 'flex' : 'none';   // кнопки на экране только на телефоне
+  active = true;
+  resize();
+});
+
+/* ---------- Холст: гладкий, с учётом плотности пикселей (retina) ---------- */
+const cv = $('#game'), ctx = cv.getContext('2d');
+let H = 360;                 // логическая высота мира (в вертикальном телефоне выше)
+let W = 640, K = 1;          // логическая ширина и масштаб «логика → пиксели экрана»
+let worldReady = false;      // мир уже создан (для пересчёта при повороте экрана)
+
+function resize() {
+  const dpr = Math.min(3, window.devicePixelRatio || 1);
+  const oldGy = H - 110;
+  if (innerHeight > innerWidth * 1.15) {            // телефон стоит вертикально
+    W = 360;
+    H = Math.round(Math.min(560, Math.max(360, (innerHeight - 140) / (innerWidth / W))));
+  } else {
+    H = 360;
+    W = Math.round(Math.max(360, Math.min(800, H * innerWidth / innerHeight)));
+  }
+  const d = H - 110 - oldGy;
+  if (worldReady && d) {
+    roofs.forEach(r => r.y += d); coinsList.forEach(c => c.y += d); P.y += d;
+    rats.forEach(r => { if (r.state === 'fall') r.y += d; });
+  }
+  const s = Math.min(innerWidth / W, innerHeight / H);
+  cv.style.width = W * s + 'px';
+  cv.style.height = H * s + 'px';
+  cv.width = Math.round(W * s * dpr);
+  cv.height = Math.round(H * s * dpr);
+  K = cv.width / W;
+}
+addEventListener('resize', resize);
+resize();
+
+/* ---------- Звук (WebAudio) ---------- */
+let ac = null;
+function beep(f, d, type = 'sine', v = .05, slide = 0) {
+  try {
+    ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+    const o = ac.createOscillator(), g = ac.createGain(), n = ac.currentTime;
+    o.type = type;
+    o.frequency.setValueAtTime(f, n);
+    if (slide) o.frequency.exponentialRampToValueAtTime(Math.max(30, f + slide), n + d);
+    g.gain.setValueAtTime(v, n);
+    g.gain.exponentialRampToValueAtTime(.001, n + d);
+    o.connect(g); g.connect(ac.destination);
+    o.start(); o.stop(n + d);
+  } catch (e) {}
+}
+
+/* ---------- Настройки игры (все числа здесь) ---------- */
+const GRAV = 1100;            // гравитация (меньше = плавнее)
+const JUMP = 470, JUMP2 = 380;
+const GLIDE = 70, GLIDE_TIME = .9;   // планирование плащом
+const SPEED0 = 105, SPEED_MAX = 165; // скорость бега: медленно, чтобы успевали все
+const COYOTE = .12, BUFFER = .12;    // прощаем чуть раннее/позднее нажатие
+const SHOT_COOLDOWN = .4, BALL_SPEED = 380;
+const PH = 42;                        // высота пингвина для столкновений
+
+/* ---------- Состояние ---------- */
+let state = 'ready';          // ready | play (проиграть нельзя!)
+let roofs = [], coinsList = [], rats = [], balls = [], parts = [], floaters = [];
+let t = 0, dist = 0, speed = SPEED0, coins = 0, best = 0;
+let hurtT = 0, slowT = 0, pushT = 0, shootCd = 0, recoil = 0, flash = 0, buf = 0;   // pushT — отталкивание назад
+let jumpHeld = false, shootHeld = false, keyA = false, keyD = false;   // A — притормозить, D — быстрее
+let jumpsTotal = 0, shotsTotal = 0, coinsTotal = 0;
+let humanDone = false, bannerT = 0, safe = null;
+try { best = +localStorage.getItem('night-penguin-best2') || 0; } catch (e) {}
+const P = { y: 0, vy: 0, jumps: 0, grounded: true, glide: GLIDE_TIME, gliding: false, coyote: 0, squash: 0 };
+const px = () => Math.round(W * .22);
+
+/* ---------- Фон ---------- */
+function skyline(n, minH, maxH, minW, maxW) {
+  const a = []; let x = 0;
+  for (let i = 0; i < n; i++) {
+    const w = minW + Math.random() * (maxW - minW);
+    a.push({ x, w, h: minH + Math.random() * (maxH - minH), s: Math.random() });
+    x += w + Math.random() * 6;
+  }
+  return { a, total: x };
+}
+const far = skyline(40, 70, 170, 30, 60), near = skyline(30, 90, 200, 40, 80);
+const stars = Array.from({ length: 60 }, () => ({ x: Math.random() * 800, y: Math.random() * 190, p: Math.random() * 6, r: .6 + Math.random() * 1.2 }));
+
+/* ---------- Мир ---------- */
+function lastEnd() { const r = roofs[roofs.length - 1]; return r.x + r.w; }
+
+function addRoof() {
+  const last = roofs[roofs.length - 1];
+  const diff = Math.min(1, dist / 8000);
+  const gap = 40 + Math.random() * (30 + diff * 20);                 // зазоры небольшие
+  const w = 130 + Math.random() * 140;
+  const gy = H - 110;
+  const y = Math.max(gy - 60, Math.min(gy + 40, last.y + (Math.random() * 56 - 28)));  // перепад высот маленький
+  const r = { x: lastEnd() + gap, w, y, ch: null, s: Math.random() };
+  roofs.push(r);
+
+  if (w > 150) {
+    const k = Math.random();
+    if (k < .3) r.ch = { dx: 40 + Math.random() * (w - 90) };      // труба
+    else if (dist > 150 && k < .65)                                  // крыса
+      rats.push({ roof: r, o: 26 + Math.random() * (w - 52), dir: Math.random() < .5 ? -1 : 1, state: 'walk', x: 0, y: 0, vx: 0, vy: 0, rot: 0, vr: 0 });
+  }
+  if (Math.random() < .75) {                                         // монетки дугой
+    const n = 2 + Math.floor(Math.random() * 3);
+    for (let i = 0; i < n; i++) {
+      const k = n > 1 ? i / (n - 1) : .5;
+      coinsList.push({ x: r.x + w / 2 - (n - 1) * 15 + i * 30, y: r.y - 52 - Math.sin(k * Math.PI) * 24 });
+    }
+  }
+}
+
+function reset() {
+  roofs = [{ x: -80, w: 420, y: H - 110, ch: null, s: .3 }];
+  coinsList = []; rats = []; balls = []; parts = []; floaters = [];
+  dist = 0; speed = SPEED0; coins = 0; hurtT = 0; slowT = 0; pushT = 0; shootCd = 0; buf = 0;
+  jumpsTotal = shotsTotal = coinsTotal = 0; humanDone = false; bannerT = 0;
+  while (lastEnd() < W + 400) addRoof();
+  safe = roofs[0];
+  Object.assign(P, { y: H - 110, vy: 0, jumps: 0, grounded: true, glide: GLIDE_TIME, gliding: false, coyote: COYOTE, squash: 0 });
+}
+reset();
+worldReady = true;
+// режим отладки: открой страницу как /?debug — тогда из консоли видно внутренности игры (для проверки)
+if (location.search.includes('debug')) window.__d = { get rats() { return rats; }, get balls() { return balls; }, get coins() { return coins; }, get dist() { return dist; }, get isTouch() { return isTouch; }, P };
+
+function puff(x, y, c, n, sp = 120) {
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * 6.28, v = Math.random() * sp;
+    parts.push({ x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v - 30, l: .6, m: .6, c, r: 2 + Math.random() * 2.5 });
+  }
+}
+function say(text, x, y, c = '#ffd34d') { floaters.push({ text, x, y, l: 1.1, c }); }
+
+/* ---------- Действия ---------- */
+function tryJump() {
+  if (P.grounded || P.coyote > 0) {
+    P.vy = -JUMP; P.grounded = false; P.coyote = 0; P.jumps = 1; P.squash = -.6; jumpsTotal++;
+    beep(380, .14, 'triangle', .05, 260);
+  } else if (P.jumps < 2) {
+    P.vy = -JUMP2; P.jumps = 2; P.squash = -.5; jumpsTotal++;
+    beep(500, .14, 'triangle', .05, 260);
+  } else buf = BUFFER;
+}
+
+function shoot() {
+  shootCd = SHOT_COOLDOWN; recoil = 1; flash = .08; shotsTotal++;
+  balls.push({ x: px() + 24, y: P.y - 19, vx: BALL_SPEED, vy: 0, l: 1.6 });
+  puff(px() + 28, P.y - 19, '#ffffff', 4, 60);
+  beep(700, .09, 'sawtooth', .03, -400);
+}
+
+function defeat(r, byBall) {
+  r.x = r.roof.x + r.o; r.y = r.roof.y;
+  r.state = 'fall'; r.vx = 90 + Math.random() * 60; r.vy = -300; r.vr = 7;
+  coins += 2; coinsTotal += 2;
+  say('+2', r.x, r.y - 30);
+  puff(r.x, r.y - 10, '#d8f4ff', 10, 140);
+  beep(220, .25, 'square', .04, -120);
+}
+
+function rescue() {            // «плащ спас»: возвращаем на последнюю крышу
+  const x = px();
+  const r = roofs.includes(safe) ? safe : roofs[0];
+  const d = x - (r.x + Math.max(30, r.w - 150));   // ставим подальше от края: есть время прыгнуть
+  roofs.forEach(o => o.x += d);
+  coinsList.forEach(o => o.x += d);
+  rats.forEach(o => { if (o.state === 'fall') o.x += d; });
+  P.y = r.y; P.vy = 0; P.grounded = true; P.jumps = 0; P.glide = GLIDE_TIME; P.squash = .8;
+  hurtT = 1.4; slowT = .35;
+  say('Плащ спас!', x, r.y - 70, '#c9a3ff');
+  beep(520, .25, 'sine', .05, 300);
+}
+
+function stumble(lose, push) {
+  hurtT = 1.2; slowT = .5; P.vy = -300; P.jumps = 1; P.squash = .6;
+  if (push) pushT = .45;                         // враг отталкивает пингвина назад
+  if (lose && coins > 0) { const l = Math.min(2, coins); coins -= l; say('-' + l, px(), P.y - 60, '#ff8b8b'); }
+  say('Ой!', px() + 10, P.y - 56, '#fff');
+  beep(180, .2, 'sine', .05, -60);
+}
+
+/* ---------- Обновление ---------- */
+function update(dt) {
+  t += dt;
+  parts.forEach(p => { p.vy += 300 * dt; p.x += p.vx * dt; p.y += p.vy * dt; p.l -= dt; });
+  parts = parts.filter(p => p.l > 0);
+  floaters.forEach(f => { f.y -= 26 * dt; f.l -= dt; });
+  floaters = floaters.filter(f => f.l > 0);
+  if (state !== 'play') {
+    rats.forEach(r => patrol(r, dt));
+    return;
+  }
+  hurtT = Math.max(0, hurtT - dt); slowT = Math.max(0, slowT - dt); pushT = Math.max(0, pushT - dt);
+  shootCd = Math.max(0, shootCd - dt); recoil = Math.max(0, recoil - dt * 5); flash = Math.max(0, flash - dt);
+  buf = Math.max(0, buf - dt); bannerT = Math.max(0, bannerT - dt);
+  P.squash += (0 - P.squash) * Math.min(1, dt * 8);
+
+  speed = Math.min(SPEED_MAX, SPEED0 + dist * .004);
+  const mv = keyD && !keyA ? 1.5 : keyA && !keyD ? .15 : 1;                 // D — быстрее, A — почти стоим
+  const dx = pushT > 0 ? -140 * dt : speed * (slowT > 0 ? .45 : 1) * mv * dt;   // при толчке мир едет назад
+  dist = Math.max(0, dist + dx);
+  roofs.forEach(r => r.x -= dx); coinsList.forEach(c => c.x -= dx);
+  while (roofs.length > 2 && roofs[0].x + roofs[0].w < -300) roofs.shift();
+  coinsList = coinsList.filter(c => c.x > -40);
+  while (lastEnd() < W + 300) addRoof();
+
+  if (shootHeld && shootCd <= 0) shoot();
+
+  // физика пингвина
+  const x = px();
+  P.vy += GRAV * dt;
+  P.gliding = false;
+  if (jumpHeld && !P.grounded && P.vy > GLIDE && P.glide > 0) { P.vy = GLIDE; P.glide -= dt; P.gliding = true; }
+  P.y += P.vy * dt;
+  const wasGrounded = P.grounded;
+  P.grounded = false;
+  for (const r of roofs) {
+    if (r.x < x + 8 && r.x + r.w > x - 8 && P.y >= r.y && P.vy >= 0) {
+      if (P.y - r.y < 46) {                          // приземлился или зашёл на ступеньку
+        P.y = r.y; P.vy = 0; P.grounded = true; P.jumps = 0; P.glide = GLIDE_TIME; safe = r;
+        if (!wasGrounded) { P.squash = .9; if (buf > 0) { buf = 0; tryJump(); } }
+      } else { rescue(); break; }                    // стукнулся о стену — плащ спасает
+    }
+  }
+  if (P.grounded) P.coyote = COYOTE; else P.coyote = Math.max(0, P.coyote - dt);
+  if (P.y > H + 40) rescue();
+
+  // трубы: не больно, пингвин просто спотыкается и подпрыгивает
+  if (hurtT <= 0) for (const r of roofs) if (r.ch) {
+    const cx = r.x + r.ch.dx;
+    if (x + 7 > cx + 1 && x - 7 < cx + 13 && P.y > r.y - 20 && P.y - PH < r.y) { stumble(false); break; }
+  }
+
+  // крысы
+  for (const r of rats) {
+    if (r.state === 'walk') {
+      patrol(r, dt);
+      const rx = r.roof.x + r.o, ry = r.roof.y;
+      if (hurtT <= 0 && Math.abs(rx - x) < 16 && P.y > ry - 32 && P.y - PH < ry) {
+        if (P.vy > 80 && P.y < ry - 6) { defeat(r); P.vy = -340; P.jumps = 1; P.squash = .5; }   // прыгнул сверху
+        else stumble(true, true);
+      }
+    } else {
+      r.vy += GRAV * dt; r.x += r.vx * dt - dx; r.y += r.vy * dt; r.rot += r.vr * dt;
+    }
+  }
+  rats = rats.filter(r => r.state === 'walk' ? r.roof.x + r.roof.w > -300 : r.y < H + 80);
+
+  // снежки (чуть сами доворачивают к крысе — так проще попасть)
+  for (const b of balls) {
+    let tg = null, bd = 1e9;
+    for (const r of rats) if (r.state === 'walk') {
+      const rx = r.roof.x + r.o, d = rx - b.x;
+      if (d > -10 && d < 480 && d < bd && Math.abs(r.roof.y - 22 - b.y) < 150) { bd = d; tg = r; }
+    }
+    if (tg) b.vy += ((tg.roof.y - 22 - b.y) * 3 - b.vy) * Math.min(1, 6 * dt);
+    b.x += b.vx * dt; b.y += b.vy * dt; b.l -= dt;
+    for (const r of rats) if (r.state === 'walk') {
+      const rx = r.roof.x + r.o;
+      if (Math.abs(rx - b.x) < 20 && Math.abs(r.roof.y - 22 - b.y) < 30) { defeat(r, true); b.l = 0; break; }
+    }
+  }
+  balls = balls.filter(b => b.l > 0 && b.x < W + 40);
+
+  // монетки
+  for (let i = coinsList.length - 1; i >= 0; i--) {
+    const c = coinsList[i];
+    if (Math.abs(c.x - x) < 24 && Math.abs(c.y - (P.y - 20)) < 30) {
+      coinsList.splice(i, 1); coins++; coinsTotal++;
+      puff(c.x, c.y, '#ffd34d', 6, 90); beep(880, .12, 'sine', .05, 500);
+    }
+  }
+
+  // «проверка, что вы не робот»
+  if (!humanDone && humanProgress() >= 1) { humanDone = true; bannerT = 4; beep(660, .3, 'sine', .06, 400); }
+  const m = Math.floor(dist / 20);
+  if (m > best) { best = m; try { localStorage.setItem('night-penguin-best2', String(m)); } catch (e) {} }
+}
+
+function patrol(r, dt) {                       // враг ходит по крыше; заметил пингвина — бежит на него
+  if (r.state !== 'walk') return;
+  const gap = r.roof.x + r.o - px();
+  r.run = state === 'play' && gap > 10 && gap < 190;
+  if (r.run) r.dir = -1;
+  r.o += r.dir * (r.run ? 42 : 22) * dt;
+  if (r.o < 20) { r.o = 20; r.dir = 1; }
+  if (r.o > r.roof.w - 20) { r.o = r.roof.w - 20; r.dir = -1; }
+}
+function humanProgress() { return Math.min(1, (coinsTotal * 6 + shotsTotal * 4 + jumpsTotal * 3) / 100); }
+
+/* ---------- Рисование: вспомогательное ---------- */
+function rr(x, y, w, h, r) {
+  ctx.beginPath(); ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+}
+function ell(x, y, rx, ry, rot = 0) { ctx.beginPath(); ctx.ellipse(x, y, rx, ry, rot, 0, Math.PI * 2); }
+function fillEll(c, x, y, rx, ry, rot) { ctx.fillStyle = c; ell(x, y, rx, ry, rot); ctx.fill(); }
+
+/* ---------- Фон ---------- */
+function drawLayer(layer, f, c1, c2, lit) {
+  const off = (dist * f) % layer.total;
+  for (let k = 0; k < 2; k++) {
+    const ox = -off + k * layer.total;
+    for (const b of layer.a) {
+      const bx = b.x + ox;
+      if (bx > W || bx + b.w < 0) continue;
+      const g = ctx.createLinearGradient(0, H - b.h, 0, H);
+      g.addColorStop(0, c1); g.addColorStop(1, c2);
+      ctx.fillStyle = g; rr(bx, H - b.h, b.w, b.h + 6, 3); ctx.fill();
+      if (lit) {
+        for (let wy = H - b.h + 12; wy < H - 30; wy += 16)
+          for (let wx = bx + 7; wx < bx + b.w - 9; wx += 13)
+            if (((wx * 7 + wy * 13 + b.s * 100) | 0) % 5 === 0) { ctx.fillStyle = 'rgba(255,205,100,.85)'; rr(wx, wy, 5, 7, 1.5); ctx.fill(); }
+        if (b.s > .7) {                                           // антенна с огоньком
+          ctx.strokeStyle = c1; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(bx + b.w / 2, H - b.h); ctx.lineTo(bx + b.w / 2, H - b.h - 22); ctx.stroke();
+          ctx.fillStyle = Math.sin(t * 3 + b.s * 20) > 0 ? '#ff5c5c' : '#7a2c2c';
+          ctx.beginPath(); ctx.arc(bx + b.w / 2, H - b.h - 22, 2, 0, 7); ctx.fill();
+        }
+      }
+    }
+  }
+}
+
+function drawBackground() {
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, '#0a0e22'); g.addColorStop(.55, '#2b1b50'); g.addColorStop(1, '#7a3478');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  stars.forEach(s => {
+    ctx.globalAlpha = .35 + .65 * Math.abs(Math.sin(t * 1.3 + s.p));
+    ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(s.x % W, s.y * H / 360, s.r, 0, 7); ctx.fill();
+  });
+  ctx.globalAlpha = 1;
+  // луна с сиянием
+  const mx = W * .8, my = 62;
+  const mg = ctx.createRadialGradient(mx, my, 10, mx, my, 70);
+  mg.addColorStop(0, 'rgba(255,244,200,.35)'); mg.addColorStop(1, 'rgba(255,244,200,0)');
+  ctx.fillStyle = mg; ctx.fillRect(mx - 80, my - 80, 160, 160);
+  fillEll('#f8f2d6', mx, my, 24, 24); fillEll('#e6dcb0', mx + 8, my - 6, 6, 6); fillEll('#e6dcb0', mx - 8, my + 9, 4, 4);
+  // облака
+  for (let i = 0; i < 4; i++) {
+    const cx = ((t * 5 + i * 260) % (W + 240)) - 120, cy = 80 + i * 26;
+    ctx.fillStyle = 'rgba(150,120,200,.10)';
+    ell(cx, cy, 60, 10); ctx.fill(); ell(cx + 30, cy - 6, 40, 9); ctx.fill();
+  }
+  // прожектор
+  const a = -Math.PI / 2 + Math.sin(t * .5) * .6, sx = W * .5;
+  const sg = ctx.createLinearGradient(sx, H, sx + Math.cos(a) * 400, H + Math.sin(a) * 400);
+  sg.addColorStop(0, 'rgba(255,245,210,.20)'); sg.addColorStop(1, 'rgba(255,245,210,0)');
+  ctx.fillStyle = sg; ctx.beginPath(); ctx.moveTo(sx, H);
+  ctx.lineTo(sx + Math.cos(a - .09) * 500, H + Math.sin(a - .09) * 500);
+  ctx.lineTo(sx + Math.cos(a + .09) * 500, H + Math.sin(a + .09) * 500); ctx.closePath(); ctx.fill();
+  drawLayer(far, .1, '#2a2050', '#1a1438', false);
+  drawLayer(near, .3, '#1c1536', '#0f0b1f', true);
+}
+
+/* ---------- Крыши, трубы, монетки ---------- */
+function drawRoofs() {
+  for (const r of roofs) {
+    if (r.x > W + 10 || r.x + r.w < -10) continue;
+    const g = ctx.createLinearGradient(0, r.y, 0, H);
+    g.addColorStop(0, '#2c2250'); g.addColorStop(1, '#0e0a1b');
+    ctx.fillStyle = g; ctx.fillRect(r.x, r.y, r.w, H - r.y + 6);
+    ctx.fillStyle = '#4b3c7c'; rr(r.x - 4, r.y - 2, r.w + 8, 9, 4); ctx.fill();
+    ctx.fillStyle = '#6e5cb0'; rr(r.x - 4, r.y - 2, r.w + 8, 3, 1.5); ctx.fill();
+    for (let wy = r.y + 22; wy < H - 14; wy += 26)
+      for (let wx = r.x + 14; wx < r.x + r.w - 20; wx += 26) {
+        const lit = ((wx * 3 + wy * 5 + r.s * 50) | 0) % 4 === 0;
+        if (lit) { ctx.fillStyle = 'rgba(255,211,107,.15)'; rr(wx - 3, wy - 3, 16, 19, 5); ctx.fill(); }
+        ctx.fillStyle = lit ? '#ffd36b' : '#1b1431'; rr(wx, wy, 10, 13, 2.5); ctx.fill();
+      }
+    if (r.ch) {
+      const cx = r.x + r.ch.dx;
+      for (let i = 0; i < 3; i++) {                                // дымок
+        const ph = (t * .5 + i / 3 + r.s) % 1;
+        ctx.fillStyle = `rgba(210,200,235,${.28 * (1 - ph)})`;
+        ctx.beginPath(); ctx.arc(cx + 7 + Math.sin(ph * 6 + i) * 4, r.y - 30 - ph * 44, 4 + ph * 9, 0, 7); ctx.fill();
+      }
+      const cg = ctx.createLinearGradient(cx, 0, cx + 14, 0);
+      cg.addColorStop(0, '#86524b'); cg.addColorStop(1, '#5a3330');
+      ctx.fillStyle = cg; rr(cx, r.y - 22, 14, 23, 1.5); ctx.fill();
+      ctx.strokeStyle = 'rgba(0,0,0,.25)'; ctx.lineWidth = 1;
+      for (let yy = r.y - 16; yy < r.y; yy += 6) { ctx.beginPath(); ctx.moveTo(cx, yy); ctx.lineTo(cx + 14, yy); ctx.stroke(); }
+      ctx.fillStyle = '#9a6a62'; rr(cx - 2, r.y - 27, 18, 6, 2.5); ctx.fill();
+    }
+  }
+}
+
+function drawCoin(c) {
+  const sx = Math.abs(Math.cos(t * 3.5 + c.x * .02));
+  ctx.save(); ctx.translate(c.x, c.y + Math.sin(t * 3 + c.x * .05) * 2); ctx.scale(.28 + .72 * sx, 1);
+  const g = ctx.createRadialGradient(-2, -2, 1, 0, 0, 9);
+  g.addColorStop(0, '#fff3a6'); g.addColorStop(1, '#f0b21a');
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(0, 0, 8.5, 0, 7); ctx.fill();
+  ctx.strokeStyle = '#c98a00'; ctx.lineWidth = 1.5; ctx.stroke();
+  ctx.strokeStyle = 'rgba(255,255,255,.6)'; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(0, 0, 5.2, 0.5, 2.4); ctx.stroke();
+  ctx.restore();
+}
+
+/* ---------- Враг в стиле Мегавольта: ходит на двух ногах, несёт заряд ---------- */
+function drawRat(r) {
+  const walking = r.state === 'walk';
+  const x = walking ? r.roof.x + r.o : r.x, y = walking ? r.roof.y : r.y;
+  if (x < -50 || x > W + 50) return;
+  const dir = walking ? r.dir : 1;
+  const ph = walking ? t * (r.run ? 14 : 9) + r.o * .2 : 0;
+  const sw = walking ? Math.sin(ph) : 0;                 // качание ног и рук
+  const bob = walking ? Math.abs(Math.cos(ph)) * 1.6 : 0;
+  const fz = Math.sin(t * 30 + r.o);                     // дрожание искр
+  ctx.save(); ctx.translate(x, y);
+  if (!walking) { ctx.translate(0, -28 * .8); ctx.rotate(r.rot); ctx.translate(0, 28 * .8); }
+  ctx.scale(.8 * dir, .8);
+  ctx.translate(0, -bob);
+
+  // ноги: бедро вверху, ботинок внизу (идёт на задних ногах)
+  const leg = (dx, a, col) => {
+    ctx.save(); ctx.translate(dx, -17); ctx.rotate(a);
+    ctx.fillStyle = col; rr(-3.2, 0, 6.4, 12, 3); ctx.fill();
+    ctx.fillStyle = '#1f2338'; rr(-3.6, 9.5, 10, 7, 3.2); ctx.fill();
+    ctx.restore();
+  };
+  leg(-2, -sw * .65, '#203a52');
+  leg(3, sw * .65, '#2a4a68');
+
+  // ранец-батарея со светящейся лампочкой
+  ctx.fillStyle = '#8b909c'; rr(-15, -34, 8, 17, 2.5); ctx.fill();
+  ctx.fillStyle = '#6b707c'; rr(-15, -34, 8, 4, 2); ctx.fill();
+  ctx.fillStyle = Math.sin(t * 6 + r.o) > 0 ? '#7dff9a' : '#2f7a45'; ctx.beginPath(); ctx.arc(-11, -24, 2, 0, 7); ctx.fill();
+
+  // дальняя рука (качается)
+  ctx.save(); ctx.translate(-3, -31); ctx.rotate(.25 + sw * .7);
+  ctx.fillStyle = '#1e3a52'; rr(-2.6, 0, 5.2, 12, 2.6); ctx.fill();
+  ctx.fillStyle = '#ffd22e'; ctx.beginPath(); ctx.arc(0, 13, 3.6, 0, 7); ctx.fill();
+  ctx.restore();
+
+  // тело: тёмно-синий прорезиненный костюм и жёлтая молния
+  const tg = ctx.createLinearGradient(-9, 0, 10, 0);
+  tg.addColorStop(0, '#2d5a7c'); tg.addColorStop(1, '#3d7aa3');
+  ctx.fillStyle = tg; rr(-9, -35, 19, 21, 7); ctx.fill();
+  ctx.fillStyle = '#ffd22e'; ctx.beginPath();
+  ctx.moveTo(3, -32); ctx.lineTo(-3, -23.5); ctx.lineTo(.5, -23.5); ctx.lineTo(-2, -16); ctx.lineTo(6, -26); ctx.lineTo(2, -26); ctx.lineTo(5, -32); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = '#17283a'; ctx.fillRect(-9, -18, 19, 2.6);                // пояс
+
+  // кабель от ранца к руке с зарядом
+  ctx.strokeStyle = '#1b1d28'; ctx.lineWidth = 1.8; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(-11, -34); ctx.quadraticCurveTo(-10, -50, 6, -46); ctx.stroke();
+
+  // ближняя рука поднята и держит шар-заряд
+  ctx.save(); ctx.translate(6, -31); ctx.rotate(-2.3 + sw * .08);
+  ctx.fillStyle = '#2f6890'; rr(-2.8, 0, 5.6, 12, 2.8); ctx.fill();
+  ctx.fillStyle = '#ffd22e'; ctx.beginPath(); ctx.arc(0, 13, 3.8, 0, 7); ctx.fill();
+  ctx.restore();
+  const ox = 19, oy = -46 + fz * .6;
+  const og = ctx.createRadialGradient(ox, oy, 1, ox, oy, 12);
+  og.addColorStop(0, 'rgba(190,250,255,.95)'); og.addColorStop(.45, 'rgba(110,225,255,.55)'); og.addColorStop(1, 'rgba(110,225,255,0)');
+  ctx.fillStyle = og; ctx.beginPath(); ctx.arc(ox, oy, 12, 0, 7); ctx.fill();
+  ctx.fillStyle = '#f2feff'; ctx.beginPath(); ctx.arc(ox, oy, 3.4, 0, 7); ctx.fill();
+  if (fz > -.3) {
+    ctx.strokeStyle = '#d4f8ff'; ctx.lineWidth = 1.2; ctx.beginPath();
+    ctx.moveTo(ox + 3, oy - 3); ctx.lineTo(ox + 8, oy - 7); ctx.lineTo(ox + 6, oy - 9); ctx.lineTo(ox + 11, oy - 12);
+    ctx.moveTo(ox - 3, oy + 3); ctx.lineTo(ox - 7, oy + 7); ctx.lineTo(ox - 5, oy + 9); ctx.stroke();
+  }
+
+  // вздыбленные электрические волосы
+  const j = k => Math.sin(t * 22 + k + r.o) * 1.5;
+  ctx.fillStyle = '#ffe44d'; ctx.beginPath();
+  ctx.moveTo(-5, -47); ctx.lineTo(-8, -56 + j(1)); ctx.lineTo(-3, -52); ctx.lineTo(-2, -63 + j(2)); ctx.lineTo(2.5, -53);
+  ctx.lineTo(6, -64 + j(3)); ctx.lineTo(8.5, -53); ctx.lineTo(13, -60 + j(4)); ctx.lineTo(12, -48); ctx.closePath(); ctx.fill();
+  // голова: серая мордочка, уши, нос, гоглы, брови
+  fillEll('#8b90a6', -3.5, -50.5, 4.4, 4.8); fillEll('#ecaabd', -3.5, -50.5, 2.5, 3);     // дальнее ухо
+  fillEll('#9aa0b6', 4, -43, 9, 8.2);
+  fillEll('#a9aec2', 11.5, -41, 6.2, 4.2); fillEll('#ee8ca6', 17, -41.8, 1.9, 1.6);
+  fillEll('#8b90a6', 6.5, -51, 4.6, 5); fillEll('#ecaabd', 6.5, -51, 2.6, 3);              // ближнее ухо
+  fillEll('#ffffff', 9, -45, 2.6, 2.7); fillEll('#16182a', 9.7, -44.8, 1.4, 1.5);
+  ctx.fillStyle = 'rgba(120,225,255,.5)'; ctx.beginPath(); ctx.arc(9, -45, 4.6, 0, 7); ctx.fill();
+  ctx.strokeStyle = '#2b2f4a'; ctx.lineWidth = 1.7; ctx.beginPath(); ctx.arc(9, -45, 4.6, 0, 7); ctx.moveTo(4.4, -45.5); ctx.lineTo(-4, -47); ctx.stroke();
+  ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(4.5, -51); ctx.lineTo(13.5, -48.8); ctx.stroke();   // злая бровь
+  ctx.strokeStyle = '#2a2d44'; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(15, -38.3); ctx.lineTo(10, -38.8); ctx.stroke();   // рот
+  ctx.strokeStyle = 'rgba(30,30,50,.55)'; ctx.lineWidth = .8;
+  ctx.beginPath(); ctx.moveTo(15, -41); ctx.lineTo(22, -43); ctx.moveTo(15, -40.2); ctx.lineTo(22, -39); ctx.stroke();   // усы
+
+  if (!walking) { ctx.fillStyle = 'rgba(170,230,255,.4)'; ell(3, -30, 17, 33); ctx.fill(); }   // замёрз во льду
+  ctx.restore();
+}
+
+/* ---------- Пингвин ---------- */
+function drawPenguin() {
+  const x = px(), run = P.grounded && state === 'play';
+  const bob = run ? Math.abs(Math.sin(t * 9)) * 1.6 : Math.sin(t * 3) * .6;
+  const air = !P.grounded;
+  ctx.save();
+  ctx.translate(x, P.y - bob);
+  if (hurtT > 0 && Math.floor(t * 12) % 2 === 0) ctx.globalAlpha = .45;
+  ctx.scale(.9 * (1 + P.squash * .1), .9 * (1 - P.squash * .1));
+  const tilt = air ? Math.max(-.2, Math.min(.28, P.vy / 1800)) : 0;
+  ctx.translate(0, -20); ctx.rotate(tilt); ctx.translate(0, 20);
+
+  // плащ
+  const fl = Math.sin(t * (run ? 11 : 7));
+  const lift = P.gliding ? -8 : (air ? (P.vy < 0 ? 7 : -3) : 0);
+  const ext = P.gliding ? 1 : 0;
+  const cg = ctx.createLinearGradient(-36, -30, 0, -6);
+  cg.addColorStop(0, '#7c3fd0'); cg.addColorStop(1, '#43197a');
+  ctx.fillStyle = cg; ctx.beginPath();
+  ctx.moveTo(-6, -34);
+  ctx.bezierCurveTo(-18, -36 + lift * .4, -30 - ext * 6 + fl * 2, -28 + lift, -35 - ext * 9 + fl * 3, -12 + lift - ext * 12);
+  ctx.quadraticCurveTo(-27 + fl * 2, -5 + lift * .5, -20, -9 + fl);
+  ctx.quadraticCurveTo(-13, -4 + fl * .6, -8, -10);
+  ctx.quadraticCurveTo(-4, -18, -4, -26); ctx.closePath(); ctx.fill();
+
+  // хвостик, лапы
+  fillEll('#151a35', -11, -7, 5, 2.4, .5);
+  const st = run ? Math.sin(t * 12) * 3 : 0;
+  fillEll('#ff9a1f', -5 + st, -1.8, 6.5, 2.8); fillEll('#ff9a1f', 8 - st, -1.8, 6.5, 2.8);
+  // дальний флиппер
+  fillEll('#121730', -11, -20, 3.6, 9, -.25);
+  // тело
+  const bg = ctx.createLinearGradient(-14, 0, 14, 0);
+  bg.addColorStop(0, '#131833'); bg.addColorStop(1, '#2c3668');
+  ctx.fillStyle = bg; ell(0, -21, 13.5, 20); ctx.fill();
+  // пузо
+  const wg = ctx.createLinearGradient(0, -32, 0, -4);
+  wg.addColorStop(0, '#ffffff'); wg.addColorStop(1, '#dfe6fb');
+  ctx.fillStyle = wg; ell(3.5, -17, 8.8, 14.2); ctx.fill();
+  // воротник плаща
+  ctx.fillStyle = '#5b2aa0'; ctx.beginPath();
+  ctx.moveTo(-12, -29.5); ctx.quadraticCurveTo(0, -23.5, 12, -29.5); ctx.quadraticCurveTo(0, -27, -12, -29.5);
+  ctx.lineTo(-11, -32); ctx.quadraticCurveTo(0, -27.5, 11, -32); ctx.closePath(); ctx.fill();
+  // маска, глаз, клюв
+  fillEll('#43197a', 6, -34, 8.5, 4.6);
+  fillEll('#ffffff', 7.4, -34, 3.2, 3.4); fillEll('#10131f', 8.4, -33.9, 1.7, 1.8); fillEll('#fff', 8.9, -34.6, .6, .6);
+  ctx.fillStyle = '#ff9a1f'; ctx.beginPath();
+  ctx.moveTo(11.5, -32.5); ctx.quadraticCurveTo(20, -31.5, 19, -28.2); ctx.quadraticCurveTo(15, -26.2, 11, -28.4); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = '#e07c10'; ctx.beginPath(); ctx.moveTo(11.5, -29.8); ctx.quadraticCurveTo(16, -29.2, 19, -28.6); ctx.quadraticCurveTo(15, -26.4, 11, -28.4); ctx.closePath(); ctx.fill();
+  // шляпа-федора
+  ctx.fillStyle = '#34145f'; ell(0, -41, 15.5, 3.6); ctx.fill();
+  const hg = ctx.createLinearGradient(0, -54, 0, -40);
+  hg.addColorStop(0, '#6a32b3'); hg.addColorStop(1, '#4a1f86');
+  ctx.fillStyle = hg; rr(-8.5, -53, 17, 14, 5); ctx.fill();
+  ctx.fillStyle = '#ffcc33'; ctx.fillRect(-8.5, -44.6, 17, 2.6);
+  ctx.fillStyle = '#4a1f86'; ell(0, -40.6, 12, 2.2); ctx.fill();
+
+  // снежкомёт в руке
+  ctx.save(); ctx.translate(-recoil * 3, 0);
+  ctx.fillStyle = '#151a35'; ell(7, -14.5, 4.6, 3.4); ctx.fill();
+  const gg = ctx.createLinearGradient(0, -22, 0, -12);
+  gg.addColorStop(0, '#c4f1ff'); gg.addColorStop(1, '#6fc3e6');
+  ctx.fillStyle = gg; rr(6, -21, 20, 8.5, 3.5); ctx.fill();
+  ctx.fillStyle = '#26465f'; rr(24, -22, 6, 10.5, 2.5); ctx.fill();
+  ctx.fillStyle = '#26465f'; rr(9.5, -13.5, 5, 7, 2); ctx.fill();
+  ctx.fillStyle = 'rgba(235,250,255,.95)'; ctx.beginPath(); ctx.arc(14, -21, 5, Math.PI, 0); ctx.fill();
+  ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(12.5, -23.3, 1.6, 0, 7); ctx.fill(); ctx.beginPath(); ctx.arc(15.5, -22.5, 1.3, 0, 7); ctx.fill();
+  if (flash > 0) { ctx.fillStyle = 'rgba(220,248,255,.9)'; ctx.beginPath(); ctx.arc(33, -16.5, 6, 0, 7); ctx.fill(); }
+  ctx.restore();
+  ctx.restore();
+}
+
+/* ---------- Кадр ---------- */
+function draw() {
+  ctx.setTransform(K, 0, 0, K, 0, 0);
+  drawBackground();
+  drawRoofs();
+  coinsList.forEach(c => { if (c.x < W + 20) drawCoin(c); });
+  rats.forEach(drawRat);
+  drawPenguin();
+  balls.forEach(b => {
+    const g = ctx.createRadialGradient(b.x, b.y, 1, b.x, b.y, 9);
+    g.addColorStop(0, '#ffffff'); g.addColorStop(.55, '#e6f8ff'); g.addColorStop(1, 'rgba(180,230,255,0)');
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(b.x, b.y, 9, 0, 7); ctx.fill();
+  });
+  parts.forEach(p => { ctx.globalAlpha = Math.max(0, p.l / p.m); ctx.fillStyle = p.c; ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, 7); ctx.fill(); });
+  ctx.globalAlpha = 1;
+  ctx.font = 'bold 15px system-ui, sans-serif'; ctx.textAlign = 'center'; ctx.lineWidth = 3; ctx.lineJoin = 'round';
+  floaters.forEach(f => { ctx.globalAlpha = Math.min(1, f.l * 2); ctx.strokeStyle = 'rgba(10,8,25,.8)'; ctx.strokeText(f.text, f.x, f.y); ctx.fillStyle = f.c; ctx.fillText(f.text, f.x, f.y); });
+  ctx.globalAlpha = 1;
+
+  // интерфейс (HUD)
+  drawCoin({ x: 22, y: 22 });
+  ctx.textAlign = 'left'; ctx.font = 'bold 17px system-ui, sans-serif'; ctx.fillStyle = '#fff';
+  ctx.fillText(coins, 38, 28);
+  ctx.font = '13px system-ui, sans-serif'; ctx.fillStyle = 'rgba(255,255,255,.85)';
+  ctx.fillText(Math.floor(dist / 20) + ' м', 90, 28);
+  ctx.textAlign = 'right'; ctx.fillText('Рекорд: ' + best + ' м', W - 12, 28);
+  const bw = Math.min(210, W - 24), pr = humanProgress();
+  ctx.textAlign = 'left'; ctx.font = '11px system-ui, sans-serif'; ctx.fillStyle = 'rgba(255,255,255,.8)';
+  ctx.fillText(humanDone ? '✓ Вы не робот!' : 'Проверка: вы человек? ' + Math.round(pr * 100) + '%', 12, 50);
+  ctx.fillStyle = 'rgba(255,255,255,.2)'; rr(12, 56, bw, 7, 3.5); ctx.fill();
+  ctx.fillStyle = humanDone ? '#5be08a' : '#ffcc33'; if (pr > 0) { rr(12, 56, Math.max(7, bw * pr), 7, 3.5); ctx.fill(); }
+
+  if (bannerT > 0) {
+    ctx.globalAlpha = Math.min(1, bannerT);
+    ctx.fillStyle = 'rgba(20,60,40,.85)'; rr(W / 2 - 130, 84, 260, 54, 14); ctx.fill();
+    ctx.textAlign = 'center'; ctx.fillStyle = '#7dffa8'; ctx.font = 'bold 20px system-ui, sans-serif'; ctx.fillText('✓ Вы не робот!', W / 2, 108);
+    ctx.fillStyle = '#d6ffe4'; ctx.font = '13px system-ui, sans-serif'; ctx.fillText('Проверка пройдена. Можно играть дальше 🙂', W / 2, 127);
+    ctx.globalAlpha = 1;
+  }
+
+  if (state === 'ready') {
+    ctx.fillStyle = 'rgba(6,8,22,.55)'; ctx.fillRect(0, 0, W, H);
+    ctx.textAlign = 'center'; ctx.fillStyle = '#ffcc33'; ctx.font = 'bold 30px system-ui, sans-serif';
+    ctx.fillText('НОЧНОЙ ПИНГВИН', W / 2, 120);
+    ctx.fillStyle = '#fff'; ctx.font = '15px system-ui, sans-serif';
+    if (isTouch) {
+      ctx.fillText('▲ прыжок (держи — планируй плащом)', W / 2, 160);
+      ctx.fillText('❄ снежок — замораживай врагов', W / 2, 184);
+    } else {
+      ctx.fillText('Пробел — прыжок (держи — планируй плащом)', W / 2, 150);
+      ctx.fillText('D — бежать быстрее,  A — притормозить', W / 2, 174);
+      ctx.fillText('F или клик мышью — снежок', W / 2, 198);
+    }
+    ctx.fillText('Собирай монетки. Проиграть нельзя!', W / 2, 228);
+    ctx.fillStyle = 'rgba(255,255,255,.7)'; ctx.font = '13px system-ui, sans-serif';
+    ctx.fillText(isTouch ? 'Нажми любую кнопку внизу' : 'Нажми пробел', W / 2, 256);
+  }
+}
+
+/* ---------- Управление: кнопки на экране + клавиатура ---------- */
+function startIfReady() { if (state === 'ready') state = 'play'; }
+const pressJump = () => { if (!active) return; startIfReady(); jumpHeld = true; tryJump(); };
+const pressShoot = () => { if (!active) return; startIfReady(); shootHeld = true; };
+const releaseJump = () => { jumpHeld = false; };
+const releaseShoot = () => { shootHeld = false; };
+
+function bindBtn(el, down, up) {
+  el.addEventListener('pointerdown', e => { e.preventDefault(); try { el.setPointerCapture(e.pointerId); } catch (_) {} el.classList.add('on'); down(); });
+  const end = () => { el.classList.remove('on'); up(); };
+  el.addEventListener('pointerup', end);
+  el.addEventListener('pointercancel', end);
+  el.addEventListener('lostpointercapture', end);
+  el.addEventListener('contextmenu', e => e.preventDefault());
+}
+bindBtn($('#btnJump'), pressJump, releaseJump);
+bindBtn($('#btnShoot'), pressShoot, releaseShoot);
+
+const JUMP_KEYS = ['Space', 'ArrowUp', 'KeyW'], SHOOT_KEYS = ['KeyF', 'KeyX', 'Enter'];
+const SLOW_KEYS = ['KeyA', 'ArrowLeft'], FAST_KEYS = ['KeyD', 'ArrowRight'];
+document.addEventListener('keydown', e => {
+  if (e.repeat) return;
+  if (JUMP_KEYS.includes(e.code)) { e.preventDefault(); pressJump(); }
+  if (SHOOT_KEYS.includes(e.code)) { e.preventDefault(); pressShoot(); }
+  if (SLOW_KEYS.includes(e.code)) { e.preventDefault(); keyA = true; }
+  if (FAST_KEYS.includes(e.code)) { e.preventDefault(); keyD = true; }
+});
+document.addEventListener('keyup', e => {
+  if (JUMP_KEYS.includes(e.code)) releaseJump();
+  if (SHOOT_KEYS.includes(e.code)) releaseShoot();
+  if (SLOW_KEYS.includes(e.code)) keyA = false;
+  if (FAST_KEYS.includes(e.code)) keyD = false;
+});
+addEventListener('blur', () => { keyA = keyD = jumpHeld = shootHeld = false; });   // окно потеряло фокус — отпускаем всё
+// на компьютере снежок ещё и по клику мыши
+cv.addEventListener('pointerdown', e => { if (!isTouch && e.button === 0) pressShoot(); });
+addEventListener('pointerup', () => { if (!isTouch) releaseShoot(); });
+
+let last = 0;
+function frame(ts) {
+  const dt = Math.min(.033, (ts - last) / 1000 || 0); last = ts;
+  if (active) { update(dt); draw(); }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
