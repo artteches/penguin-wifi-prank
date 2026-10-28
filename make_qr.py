@@ -118,6 +118,81 @@ def write_3mf(path, parts, title):
         z.writestr("Metadata/model_settings.config", settings)
 
 
+CELL = 0.4          # сетка вкладыша, мм (как ширина линии сопла 0.4)
+
+
+def dilate(mask, k=1):
+    """Расширяет закрашенные клетки на k клеток во все стороны (включая диагонали)."""
+    h, w = len(mask), len(mask[0])
+    out = [[False] * w for _ in range(h)]
+    for y in range(h):
+        for x in range(w):
+            if mask[y][x]:
+                for yy in range(max(0, y - k), min(h, y + k + 1)):
+                    for xx in range(max(0, x - k), min(w, x + k + 1)):
+                        out[yy][xx] = True
+    return out
+
+
+def mask_boxes(tris, mask, z0, z1, cell=CELL):
+    """Добавляет параллелепипеды, покрывающие True-клетки маски между z0 и z1.
+
+    Строка 0 маски — СВЕРХУ (как на картинке). Одинаковые полосы в соседних строках склеиваем в один
+    параллелепипед, чтобы треугольников было меньше.
+    """
+    h = len(mask)
+    active = {}                                   # (x0, x1) -> строка, с которой полоса началась
+
+    def emit(key, r0, r1):
+        box(tris, key[0] * cell, (h - r1) * cell, z0, key[1] * cell, (h - r0) * cell, z1)
+
+    for r in range(h + 1):
+        runs, row = set(), (mask[r] if r < h else [])
+        x = 0
+        while x < len(row):
+            if row[x]:
+                s = x
+                while x < len(row) and row[x]:
+                    x += 1
+                runs.add((s, x))
+            else:
+                x += 1
+        for key in [k for k in active if k not in runs]:
+            emit(key, active.pop(key), r)
+        for key in runs:
+            active.setdefault(key, r)
+
+
+def inlay_parts(mask, floor=0.8, flange=0.4, top=2.0):
+    """Белая основа + вставной TPU (вкладыш), зацепленный за основу.
+
+    TPU плохо липнет к PLA, поэтому держим его формой, а не клеем:
+      0 … floor            белый сплошной пол
+      floor … +flange      TPU «лапка» — модуль, расширенный на 1 клетку (0.4 мм) со всех сторон
+      выше, до top         TPU «ножка» — ровно модуль; белый над лапкой нависает и не даёт TPU выйти вверх.
+    Верх плоский: видны только ножки (точный размер модуля). Объёмы деталей не пересекаются.
+    """
+    h, w = len(mask), len(mask[0])
+    full = [[True] * w for _ in range(h)]
+    inv = lambda m: [[not v for v in row] for row in m]
+    wide = dilate(mask, 1)
+    white, tpu = [], []
+    mask_boxes(white, full, 0, floor)
+    mask_boxes(white, inv(wide), floor, floor + flange)
+    mask_boxes(white, inv(mask), floor + flange, top)
+    mask_boxes(tpu, wide, floor, floor + flange)
+    mask_boxes(tpu, mask, floor + flange, top)
+    return white, tpu
+
+
+def qr_mask(grid, quiet, k):
+    """Матрица QR (n×n модулей) → маска клеток по CELL: модуль = k×k клеток, вокруг тихая зона."""
+    n = len(grid)
+    size = (n + 2 * quiet) * k
+    return [[0 <= r // k - quiet < n and 0 <= c // k - quiet < n and bool(grid[r // k - quiet][c // k - quiet])
+             for c in range(size)] for r in range(size)]
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("url", nargs="?", default=f"http://{lan_ip()}:8000/")
@@ -161,6 +236,18 @@ def main():
     ], f"QR {a.url}")
     print(f"Объём деталей: основа {volume(base):.0f} мм³, модули {volume(blue):.0f} мм³ (должны быть > 0)")
 
+    # вариант «вкладыш» для TPU: модули вставлены в основу и зацеплены за неё (TPU плохо липнет к PLA)
+    k = round(m / CELL)                                   # клеток 0.4 мм в одном модуле (при 2.0 мм — 5)
+    mask = qr_mask(grid, QUIET, k)
+    white, tpu = inlay_parts(mask, top=a.base)
+    write_3mf(OUT / "qr-penguin-wifi-tpu-locked.3mf", [
+        {"name": "base-white-glow", "tris": white, "material": "Glow white PLA", "color": "#E6F2DD", "extruder": 1},
+        {"name": "modules-tpu-locked", "tris": tpu, "material": "Dark gray TPU", "color": "#4A4A4A", "extruder": 2},
+    ], f"QR {a.url} (TPU inlay)")
+    plate = len(mask) * len(mask[0]) * CELL * CELL * a.base
+    print(f"Вкладыш TPU: белый {volume(white):.0f} + TPU {volume(tpu):.0f} = {volume(white) + volume(tpu):.0f} мм³; "
+          f"плитка целиком {plate:.0f} мм³ (должны совпасть); модуль {k * CELL:g} мм")
+
     # картинка-предпросмотр
     px = 16
     img = Image.new("RGB", ((n + 2 * QUIET) * px,) * 2, "#e9f3e4")
@@ -179,4 +266,5 @@ def main():
         print("ВНИМАНИЕ: модуль меньше 1.6 мм — сопло 0.4 может печатать плохо.")
 
 
-main()
+if __name__ == "__main__":      # чтобы make_test_tile.py мог импортировать функции отсюда
+    main()

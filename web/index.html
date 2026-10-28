@@ -111,6 +111,7 @@ let W = 640, K = 1;          // логическая ширина и масшт�
 let worldReady = false;      // мир уже создан (для пересчёта при повороте экрана)
 
 function resize() {
+  if (!innerWidth || !innerHeight) return;           // вкладка скрыта/свёрнута (размер 0) — не считаем, иначе мир сломается
   const dpr = Math.min(3, window.devicePixelRatio || 1);
   const oldGy = H - 110;
   if (innerHeight > innerWidth * 1.15) {            // телефон стоит вертикально
@@ -172,6 +173,34 @@ try { best = +localStorage.getItem('night-penguin-best2') || 0; } catch (e) {}
 const P = { y: 0, vy: 0, jumps: 0, grounded: true, glide: GLIDE_TIME, gliding: false, coyote: 0, squash: 0 };
 const px = () => Math.round(W * .22);
 
+/* ---------- Уровни и враги ---------- */
+// каждый уровень: длина в метрах (1 м = 20 px), тип врага, шанс врага на крыше, цвета неба и домов
+const LEVELS = [
+  { name: 'Электрик', info: 'Бегает на двух ногах и бьёт током', len: 240, kind: 'volt', chance: .30,
+    sky: ['#0a0e22', '#2b1b50', '#7a3478'], far: ['#2a2050', '#1a1438'], near: ['#1c1536', '#0f0b1f'] },
+  { name: 'Электрик-силач', info: 'Крепче (2 снежка) и стреляет искрами', len: 300, kind: 'volt2', chance: .36,
+    sky: ['#14081c', '#4a1a3e', '#c0553a'], far: ['#4a2040', '#2a1230'], near: ['#2c1430', '#180a1c'] },
+  { name: 'Шутник', info: 'Скачет и кидает мячи-прыгуны', len: 360, kind: 'joker', chance: .38,
+    sky: ['#07161f', '#12485a', '#3aa090'], far: ['#1a4a58', '#0f2e3a'], near: ['#103440', '#081c26'] },
+  { name: 'Живой куст', info: 'Здоровяк (3 снежка), плюётся семечками', len: 420, kind: 'bush', chance: .38,
+    sky: ['#07160b', '#174a2a', '#6aa040'], far: ['#1c4a2a', '#102e1a'], near: ['#123420', '#091e12'] },
+  { name: 'Водяной пёс', info: 'Очень быстрый, зато не стреляет', len: 480, kind: 'water', chance: .40,
+    sky: ['#06122a', '#133a70', '#3f84c2'], far: ['#1a3a70', '#0f2248'], near: ['#102850', '#081630'] },
+  { name: 'Все злодеи вместе', info: 'Финал: все враги, и они крепче!', len: 540, kind: 'mix', hpBonus: 1, chance: .46,
+    sky: ['#12060a', '#4a1020', '#a02a3a'], far: ['#3a1424', '#220a14'], near: ['#2a0e18', '#14060c'] },
+];
+// враги: hp — сколько снежков выдерживает, sc — размер, run/walk — скорость бега/ходьбы, shoot — как часто стреляет (сек; 0 — не стреляет)
+const KIND = {
+  volt:  { hp: 1, sc: .8,   run: 42, walk: 22, shoot: 0,   bullet: null },
+  volt2: { hp: 2, sc: .92,  run: 54, walk: 26, shoot: 3.4, bullet: 'spark' },
+  joker: { hp: 2, sc: .85,  run: 40, walk: 24, shoot: 3.0, bullet: 'ball' },
+  bush:  { hp: 3, sc: 1.05, run: 30, walk: 16, shoot: 3.8, bullet: 'seed' },
+  water: { hp: 3, sc: .9,   run: 72, walk: 30, shoot: 0,   bullet: null },
+};
+const MIX = ['volt2', 'joker', 'bush', 'water'];
+let lvl = 0, doneM = 0, goal = null, goalPlaced = false, portalT = 0, lvlBannerT = 0, stompT = 0, fadeT = 0, endT = 0, leaving = false;
+let ebullets = [];
+
 /* ---------- Фон ---------- */
 function skyline(n, minH, maxH, minW, maxW) {
   const a = []; let x = 0;
@@ -186,23 +215,38 @@ const far = skyline(40, 70, 170, 30, 60), near = skyline(30, 90, 200, 40, 80);
 const stars = Array.from({ length: 60 }, () => ({ x: Math.random() * 800, y: Math.random() * 190, p: Math.random() * 6, r: .6 + Math.random() * 1.2 }));
 
 /* ---------- Мир ---------- */
+// «случайность», которая НЕ меняется: одни и те же (дом, номер окна) дают одно и то же число — окна не мигают
+function hash(a, b, c) {
+  let h = Math.imul(a | 0, 374761393) ^ Math.imul(b | 0, 668265263) ^ Math.imul(c | 0, 1274126177);
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+}
 function lastEnd() { const r = roofs[roofs.length - 1]; return r.x + r.w; }
 
 function addRoof() {
   const last = roofs[roofs.length - 1];
+  const L = LEVELS[lvl];
   const diff = Math.min(1, dist / 8000);
   const gap = 40 + Math.random() * (30 + diff * 20);                 // зазоры небольшие
-  const w = 130 + Math.random() * 140;
   const gy = H - 110;
+  const x = lastEnd() + gap;
+  if (!goalPlaced && dist + (x - px()) >= L.len * 20) {              // конец уровня: широкая крыша с флажком-порталом
+    const g = { x, w: 460, y: Math.max(gy - 20, Math.min(gy + 20, last.y)), ch: null, s: Math.random(), goal: true };
+    roofs.push(g); goalPlaced = true; goal = { roof: g, o: 340 };
+    return;
+  }
+  const w = 130 + Math.random() * 140;
   const y = Math.max(gy - 60, Math.min(gy + 40, last.y + (Math.random() * 56 - 28)));  // перепад высот маленький
-  const r = { x: lastEnd() + gap, w, y, ch: null, s: Math.random() };
+  const r = { x, w, y, ch: null, s: Math.random() };
   roofs.push(r);
 
-  if (w > 150) {
+  if (!goalPlaced && w > 150) {
     const k = Math.random();
-    if (k < .3) r.ch = { dx: 40 + Math.random() * (w - 90) };      // труба
-    else if (dist > 150 && k < .65)                                  // крыса
-      rats.push({ roof: r, o: 26 + Math.random() * (w - 52), dir: Math.random() < .5 ? -1 : 1, state: 'walk', x: 0, y: 0, vx: 0, vy: 0, rot: 0, vr: 0 });
+    if (k < .25) r.ch = { dx: 40 + Math.random() * (w - 90) };      // труба
+    else if (dist > 150 && k < .25 + L.chance) {                     // враг (на поздних уровнях бывает двое)
+      spawnEnemy(r, 26 + Math.random() * (w - 52));
+      if (lvl >= 2 && w > 230 && Math.random() < .4) spawnEnemy(r, 26 + Math.random() * (w - 52));
+    }
   }
   if (Math.random() < .75) {                                         // монетки дугой
     const n = 2 + Math.floor(Math.random() * 3);
@@ -213,19 +257,71 @@ function addRoof() {
   }
 }
 
-function reset() {
+function spawnEnemy(r, o) {
+  const L = LEVELS[lvl];
+  const kind = L.kind === 'mix' ? MIX[(Math.random() * MIX.length) | 0] : L.kind;
+  const K = KIND[kind];
+  const hp = K.hp + (L.hpBonus || 0);                                // на финале враги крепче
+  rats.push({ kind, roof: r, o, dir: Math.random() < .5 ? -1 : 1, state: 'walk', x: 0, y: 0, vx: 0, vy: 0, rot: 0, vr: 0,
+    hp, max: hp, sc: K.sc, runv: K.run, walkv: K.walk, shoot: K.shoot, bullet: K.bullet, cd: .8 + Math.random() * 1.4, flash: 0 });
+}
+
+function startLevel(i) {
+  lvl = i;
   roofs = [{ x: -80, w: 420, y: H - 110, ch: null, s: .3 }];
-  coinsList = []; rats = []; balls = []; parts = []; floaters = [];
-  dist = 0; speed = SPEED0; coins = 0; hurtT = 0; slowT = 0; pushT = 0; shootCd = 0; buf = 0;
-  jumpsTotal = shotsTotal = coinsTotal = 0; humanDone = false; bannerT = 0;
+  coinsList = []; rats = []; balls = []; ebullets = []; parts = []; floaters = []; goal = null; goalPlaced = false;
+  dist = 0; speed = SPEED0; hurtT = 0; slowT = 0; pushT = 0; shootCd = 0; buf = 0; stompT = 0; portalT = 0; lvlBannerT = 4.5;
   while (lastEnd() < W + 400) addRoof();
   safe = roofs[0];
   Object.assign(P, { y: H - 110, vy: 0, jumps: 0, grounded: true, glide: GLIDE_TIME, gliding: false, coyote: COYOTE, squash: 0 });
 }
+
+function reset() {             // полный перезапуск: первый уровень, монеты и счётчики с нуля
+  coins = 0; jumpsTotal = shotsTotal = coinsTotal = 0; humanDone = false; bannerT = 0; doneM = 0; endT = 0; leaving = false;
+  startLevel(0);
+}
+
+function nextLevel() {         // прошли портал: следующий злодей; после последнего уровня игра заканчивается, страница закрывается
+  doneM += LEVELS[lvl].len;
+  const m = Math.floor(doneM);
+  if (m > best) { best = m; try { localStorage.setItem('night-penguin-best2', String(m)); } catch (e) {} }
+  if (lvl + 1 >= LEVELS.length) {
+    state = 'end'; endT = 0;
+    $('#pad').style.display = 'none';                                   // кнопки пропадают, вся страница плавно белеет
+    document.body.style.transition = document.documentElement.style.transition = 'background 1.5s';
+    document.body.style.background = document.documentElement.style.background = '#fff';
+    return;
+  }
+  startLevel(lvl + 1);
+  state = 'play'; fadeT = .5;
+}
+
+function leave() {             // страница «исчезает»: закрываем вкладку, а если браузер не разрешает — заменяем игру пустой страницей
+  leaving = true;
+  if (window.__d && !location.search.includes('leave')) { window.__left = true; return; }   // в режиме отладки со страницы не уходим
+  try { window.close(); } catch (e) {}
+  setTimeout(() => { try { location.replace('about:blank'); } catch (e) {} }, 400);
+}
+
+function startPortal() {
+  state = 'portal'; portalT = 0;
+  coins += 10; coinsTotal += 10;
+  say('Уровень пройден! +10', px() + 20, P.y - 78, '#c9a3ff');
+  beep(400, .7, 'sine', .06, 900);
+}
 reset();
 worldReady = true;
 // режим отладки: открой страницу как /?debug — тогда из консоли видно внутренности игры (для проверки)
-if (location.search.includes('debug')) window.__d = { get rats() { return rats; }, get balls() { return balls; }, get coins() { return coins; }, get dist() { return dist; }, get isTouch() { return isTouch; }, P };
+if (location.search.includes('debug')) window.__d = {
+  get rats() { return rats; }, get balls() { return balls; }, get ebullets() { return ebullets; }, get coins() { return coins; },
+  get dist() { return dist; }, get isTouch() { return isTouch; }, get lvl() { return lvl; }, get goal() { return goal; },
+  get state() { return state; }, P, startLevel, LEVELS,
+  setState(v) { state = v; },
+  hideBanner() { lvlBannerT = 0; },
+  showGoal(x) { if (goal) { const s = x - (goal.roof.x + goal.o); roofs.forEach(r => r.x += s); } },
+  nearGoal() { dist = LEVELS[lvl].len * 20 - 300; },
+  spawn(kind, x) { const L = LEVELS[lvl], old = L.kind; L.kind = kind; spawnEnemy(roofs[0], x - roofs[0].x); L.kind = old; },
+};
 
 function puff(x, y, c, n, sp = 120) {
   for (let i = 0; i < n; i++) {
@@ -253,13 +349,34 @@ function shoot() {
   beep(700, .09, 'sawtooth', .03, -400);
 }
 
-function defeat(r, byBall) {
+function hitEnemy(r) {          // снежок или прыжок сверху: враг теряет одну «жизнь»; последняя — враг падает
+  r.hp--;
+  if (r.hp > 0) {
+    r.flash = .16;
+    puff(r.roof.x + r.o, r.roof.y - 26 * r.sc, '#d8f4ff', 6, 110); beep(300, .1, 'square', .04, -80);
+    return;
+  }
+  defeat(r);
+}
+
+function defeat(r) {
   r.x = r.roof.x + r.o; r.y = r.roof.y;
   r.state = 'fall'; r.vx = 90 + Math.random() * 60; r.vy = -300; r.vr = 7;
-  coins += 2; coinsTotal += 2;
-  say('+2', r.x, r.y - 30);
+  const gain = 1 + r.max;                                          // чем крепче враг, тем больше монет
+  coins += gain; coinsTotal += gain;
+  say('+' + gain, r.x, r.y - 34 * r.sc);
   puff(r.x, r.y - 10, '#d8f4ff', 10, 140);
   beep(220, .25, 'square', .04, -120);
+}
+
+function groundAt(x) { for (const r of roofs) if (x > r.x && x < r.x + r.w) return r.y; return 1e9; }
+
+function enemyShoot(r, rx, ry) {
+  r.dir = -1;                                                      // повернулся к пингвину
+  if (r.bullet === 'spark') ebullets.push({ k: 'spark', x: rx - 16, y: ry - 28 * r.sc, vx: -170, vy: 0, l: 3 });
+  else if (r.bullet === 'ball') ebullets.push({ k: 'ball', x: rx - 14, y: ry - 40 * r.sc, vx: -170, vy: -260, g: 900, l: 4, n: 0 });
+  else if (r.bullet === 'seed') ebullets.push({ k: 'seed', x: rx - 14, y: ry - 14 * r.sc, vx: -140, vy: 0, l: 3 });
+  beep(260, .12, 'sawtooth', .02, 200);
 }
 
 function rescue() {            // «плащ спас»: возвращаем на последнюю крышу
@@ -286,20 +403,34 @@ function stumble(lose, push) {
 /* ---------- Обновление ---------- */
 function update(dt) {
   t += dt;
+  fadeT = Math.max(0, fadeT - dt);
   parts.forEach(p => { p.vy += 300 * dt; p.x += p.vx * dt; p.y += p.vy * dt; p.l -= dt; });
   parts = parts.filter(p => p.l > 0);
   floaters.forEach(f => { f.y -= 26 * dt; f.l -= dt; });
   floaters = floaters.filter(f => f.l > 0);
+  if (state === 'end') {                          // финал: экран белеет, через 4 с страница закрывается
+    endT += dt;
+    if (endT > 4 && !leaving) leave();
+    return;
+  }
+  if (state === 'portal') {                       // пингвин «засасывается» в портал, потом начинается следующий уровень
+    portalT += dt;
+    rats.forEach(r => patrol(r, dt));
+    if (Math.random() < dt * 60) puff(px(), P.y - 20, Math.random() < .5 ? '#c9a3ff' : '#8fe3ff', 2, 140);
+    if (portalT > 1.4) nextLevel();
+    return;
+  }
   if (state !== 'play') {
     rats.forEach(r => patrol(r, dt));
     return;
   }
   hurtT = Math.max(0, hurtT - dt); slowT = Math.max(0, slowT - dt); pushT = Math.max(0, pushT - dt);
   shootCd = Math.max(0, shootCd - dt); recoil = Math.max(0, recoil - dt * 5); flash = Math.max(0, flash - dt);
-  buf = Math.max(0, buf - dt); bannerT = Math.max(0, bannerT - dt);
+  buf = Math.max(0, buf - dt); bannerT = Math.max(0, bannerT - dt); stompT = Math.max(0, stompT - dt);
+  lvlBannerT = Math.max(0, lvlBannerT - dt);
   P.squash += (0 - P.squash) * Math.min(1, dt * 8);
 
-  speed = Math.min(SPEED_MAX, SPEED0 + dist * .004);
+  speed = Math.min(SPEED_MAX + lvl * 4, SPEED0 + lvl * 5 + dist * .004);       // с каждым уровнем чуть быстрее
   const mv = keyD && !keyA ? 1.5 : keyA && !keyD ? .15 : 1;                 // D — быстрее, A — почти стоим
   const dx = pushT > 0 ? -140 * dt : speed * (slowT > 0 ? .45 : 1) * mv * dt;   // при толчке мир едет назад
   dist = Math.max(0, dist + dx);
@@ -335,13 +466,18 @@ function update(dt) {
     if (x + 7 > cx + 1 && x - 7 < cx + 13 && P.y > r.y - 20 && P.y - PH < r.y) { stumble(false); break; }
   }
 
-  // крысы
+  // враги
   for (const r of rats) {
     if (r.state === 'walk') {
       patrol(r, dt);
+      r.flash = Math.max(0, r.flash - dt);
       const rx = r.roof.x + r.o, ry = r.roof.y;
-      if (hurtT <= 0 && Math.abs(rx - x) < 16 && P.y > ry - 32 && P.y - PH < ry) {
-        if (P.vy > 80 && P.y < ry - 6) { defeat(r); P.vy = -340; P.jumps = 1; P.squash = .5; }   // прыгнул сверху
+      if (r.shoot > 0) {                                           // стреляют, когда пингвин рядом
+        r.cd -= dt;
+        if (r.cd <= 0 && rx > x + 70 && rx < W - 8 && rx - x < 300) { enemyShoot(r, rx, ry); r.cd = r.shoot * (.8 + Math.random() * .5); }
+      }
+      if (hurtT <= 0 && stompT <= 0 && Math.abs(rx - x) < 20 * r.sc && P.y > ry - 40 * r.sc && P.y - PH < ry) {
+        if (P.vy > 80 && P.y < ry - 6) { hitEnemy(r); P.vy = -340; P.jumps = 1; P.squash = .5; stompT = .45; }   // прыгнул сверху
         else stumble(true, true);
       }
     } else {
@@ -350,21 +486,36 @@ function update(dt) {
   }
   rats = rats.filter(r => r.state === 'walk' ? r.roof.x + r.roof.w > -300 : r.y < H + 80);
 
-  // снежки (чуть сами доворачивают к крысе — так проще попасть)
+  // снежки (чуть сами доворачивают к врагу — так проще попасть)
   for (const b of balls) {
     let tg = null, bd = 1e9;
     for (const r of rats) if (r.state === 'walk') {
       const rx = r.roof.x + r.o, d = rx - b.x;
-      if (d > -10 && d < 480 && d < bd && Math.abs(r.roof.y - 22 - b.y) < 150) { bd = d; tg = r; }
+      if (d > -10 && d < 480 && d < bd && Math.abs(r.roof.y - 28 * r.sc - b.y) < 150) { bd = d; tg = r; }
     }
-    if (tg) b.vy += ((tg.roof.y - 22 - b.y) * 3 - b.vy) * Math.min(1, 6 * dt);
+    if (tg) b.vy += ((tg.roof.y - 28 * tg.sc - b.y) * 3 - b.vy) * Math.min(1, 6 * dt);
     b.x += b.vx * dt; b.y += b.vy * dt; b.l -= dt;
     for (const r of rats) if (r.state === 'walk') {
       const rx = r.roof.x + r.o;
-      if (Math.abs(rx - b.x) < 20 && Math.abs(r.roof.y - 22 - b.y) < 30) { defeat(r, true); b.l = 0; break; }
+      if (Math.abs(rx - b.x) < 25 * r.sc && Math.abs(r.roof.y - 28 * r.sc - b.y) < 36 * r.sc) { hitEnemy(r); b.l = 0; break; }
     }
   }
   balls = balls.filter(b => b.l > 0 && b.x < W + 40);
+
+  // вражеские снаряды: попадают в пингвина; снежок их сбивает
+  for (const b of ebullets) {
+    b.vy += (b.g || 0) * dt; b.x += b.vx * dt; b.y += b.vy * dt; b.l -= dt;
+    if (b.k === 'ball') {                                          // мяч-прыгун отскакивает от крыши
+      const gy = groundAt(b.x);
+      if (b.y > gy - 6 && b.vy > 0) { b.y = gy - 6; b.vy = -b.vy * .75; if (++b.n > 2) b.l = 0; }
+    }
+    if (hurtT <= 0 && Math.abs(b.x - x) < 12 && b.y > P.y - PH && b.y < P.y + 2) { stumble(true, false); b.l = 0; puff(b.x, b.y, '#ffd34d', 6, 100); }
+    for (const s of balls) if (Math.hypot(s.x - b.x, s.y - b.y) < 14) { b.l = 0; s.l = 0; puff(b.x, b.y, '#ffffff', 6, 90); beep(500, .08, 'triangle', .03, 200); }
+  }
+  ebullets = ebullets.filter(b => b.l > 0 && b.x > -30 && b.y < H + 40);
+
+  // флажок в конце уровня
+  if (goal && goal.roof.x + goal.o <= x + 6) startPortal();
 
   // монетки
   for (let i = coinsList.length - 1; i >= 0; i--) {
@@ -377,7 +528,7 @@ function update(dt) {
 
   // «проверка, что вы не робот»
   if (!humanDone && humanProgress() >= 1) { humanDone = true; bannerT = 4; beep(660, .3, 'sine', .06, 400); }
-  const m = Math.floor(dist / 20);
+  const m = Math.floor(doneM + dist / 20);
   if (m > best) { best = m; try { localStorage.setItem('night-penguin-best2', String(m)); } catch (e) {} }
 }
 
@@ -386,7 +537,7 @@ function patrol(r, dt) {                       // враг ходит по кр�
   const gap = r.roof.x + r.o - px();
   r.run = state === 'play' && gap > 10 && gap < 190;
   if (r.run) r.dir = -1;
-  r.o += r.dir * (r.run ? 42 : 22) * dt;
+  r.o += r.dir * (r.run ? r.runv : r.walkv) * dt;
   if (r.o < 20) { r.o = 20; r.dir = 1; }
   if (r.o > r.roof.w - 20) { r.o = r.roof.w - 20; r.dir = -1; }
 }
@@ -413,9 +564,13 @@ function drawLayer(layer, f, c1, c2, lit) {
       g.addColorStop(0, c1); g.addColorStop(1, c2);
       ctx.fillStyle = g; rr(bx, H - b.h, b.w, b.h + 6, 3); ctx.fill();
       if (lit) {
-        for (let wy = H - b.h + 12; wy < H - 30; wy += 16)
-          for (let wx = bx + 7; wx < bx + b.w - 9; wx += 13)
-            if (((wx * 7 + wy * 13 + b.s * 100) | 0) % 5 === 0) { ctx.fillStyle = 'rgba(255,205,100,.85)'; rr(wx, wy, 5, 7, 1.5); ctx.fill(); }
+        const sd = Math.floor(b.s * 1e6);                           // окна зажигаются по номеру, а не по положению на экране — не мигают
+        for (let j = 0, wy = H - b.h + 12; wy < H - 30; wy += 16, j++)
+          for (let i = 0, wx = bx + 7; wx < bx + b.w - 9; wx += 13, i++)
+            if (hash(sd, i, j) < .22) {
+              ctx.fillStyle = 'rgba(255,205,100,.16)'; rr(wx - 2, wy - 2, 9, 11, 3); ctx.fill();     // мягкое свечение
+              ctx.fillStyle = 'rgba(255,214,120,.9)'; rr(wx, wy, 5, 7, 1.5); ctx.fill();
+            }
         if (b.s > .7) {                                           // антенна с огоньком
           ctx.strokeStyle = c1; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(bx + b.w / 2, H - b.h); ctx.lineTo(bx + b.w / 2, H - b.h - 22); ctx.stroke();
           ctx.fillStyle = Math.sin(t * 3 + b.s * 20) > 0 ? '#ff5c5c' : '#7a2c2c';
@@ -428,7 +583,8 @@ function drawLayer(layer, f, c1, c2, lit) {
 
 function drawBackground() {
   const g = ctx.createLinearGradient(0, 0, 0, H);
-  g.addColorStop(0, '#0a0e22'); g.addColorStop(.55, '#2b1b50'); g.addColorStop(1, '#7a3478');
+  const L = LEVELS[lvl];
+  g.addColorStop(0, L.sky[0]); g.addColorStop(.55, L.sky[1]); g.addColorStop(1, L.sky[2]);
   ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
   stars.forEach(s => {
     ctx.globalAlpha = .35 + .65 * Math.abs(Math.sin(t * 1.3 + s.p));
@@ -454,8 +610,8 @@ function drawBackground() {
   ctx.fillStyle = sg; ctx.beginPath(); ctx.moveTo(sx, H);
   ctx.lineTo(sx + Math.cos(a - .09) * 500, H + Math.sin(a - .09) * 500);
   ctx.lineTo(sx + Math.cos(a + .09) * 500, H + Math.sin(a + .09) * 500); ctx.closePath(); ctx.fill();
-  drawLayer(far, .1, '#2a2050', '#1a1438', false);
-  drawLayer(near, .3, '#1c1536', '#0f0b1f', true);
+  drawLayer(far, .1, L.far[0], L.far[1], false);
+  drawLayer(near, .3, L.near[0], L.near[1], true);
 }
 
 /* ---------- Крыши, трубы, монетки ---------- */
@@ -465,11 +621,12 @@ function drawRoofs() {
     const g = ctx.createLinearGradient(0, r.y, 0, H);
     g.addColorStop(0, '#2c2250'); g.addColorStop(1, '#0e0a1b');
     ctx.fillStyle = g; ctx.fillRect(r.x, r.y, r.w, H - r.y + 6);
-    ctx.fillStyle = '#4b3c7c'; rr(r.x - 4, r.y - 2, r.w + 8, 9, 4); ctx.fill();
-    ctx.fillStyle = '#6e5cb0'; rr(r.x - 4, r.y - 2, r.w + 8, 3, 1.5); ctx.fill();
-    for (let wy = r.y + 22; wy < H - 14; wy += 26)
-      for (let wx = r.x + 14; wx < r.x + r.w - 20; wx += 26) {
-        const lit = ((wx * 3 + wy * 5 + r.s * 50) | 0) % 4 === 0;
+    ctx.fillStyle = r.goal ? '#c9a640' : '#4b3c7c'; rr(r.x - 4, r.y - 2, r.w + 8, 9, 4); ctx.fill();
+    ctx.fillStyle = r.goal ? '#ffe28a' : '#6e5cb0'; rr(r.x - 4, r.y - 2, r.w + 8, 3, 1.5); ctx.fill();
+    const sd = Math.floor(r.s * 1e6);
+    for (let j = 0, wy = r.y + 22; wy < H - 14; wy += 26, j++)
+      for (let i = 0, wx = r.x + 14; wx < r.x + r.w - 20; wx += 26, i++) {
+        const lit = hash(sd, i, j) < .26;                          // окно светится постоянно, не мигает
         if (lit) { ctx.fillStyle = 'rgba(255,211,107,.15)'; rr(wx - 3, wy - 3, 16, 19, 5); ctx.fill(); }
         ctx.fillStyle = lit ? '#ffd36b' : '#1b1431'; rr(wx, wy, 10, 13, 2.5); ctx.fill();
       }
@@ -501,20 +658,44 @@ function drawCoin(c) {
   ctx.restore();
 }
 
-/* ---------- Враг в стиле Мегавольта: ходит на двух ногах, несёт заряд ---------- */
+/* ---------- Враги: электрик, силач, шутник, куст, водяной пёс ---------- */
+// общая «обёртка»: позиция, масштаб, походка; внутри — рисунок нужного злодея (все стоят ногами в точке (0,0), лицом вправо)
 function drawRat(r) {
   const walking = r.state === 'walk';
   const x = walking ? r.roof.x + r.o : r.x, y = walking ? r.roof.y : r.y;
-  if (x < -50 || x > W + 50) return;
-  const dir = walking ? r.dir : 1;
+  if (x < -60 || x > W + 60) return;
+  const sc = r.sc, dir = walking ? r.dir : 1;
   const ph = walking ? t * (r.run ? 14 : 9) + r.o * .2 : 0;
   const sw = walking ? Math.sin(ph) : 0;                 // качание ног и рук
   const bob = walking ? Math.abs(Math.cos(ph)) * 1.6 : 0;
+  const hop = r.kind === 'joker' && walking ? -Math.abs(Math.sin(t * 5 + r.o)) * 7 : 0;   // шутник подпрыгивает
   const fz = Math.sin(t * 30 + r.o);                     // дрожание искр
-  ctx.save(); ctx.translate(x, y);
-  if (!walking) { ctx.translate(0, -28 * .8); ctx.rotate(r.rot); ctx.translate(0, 28 * .8); }
-  ctx.scale(.8 * dir, .8);
+  ctx.save(); ctx.translate(x, y + hop);
+  if (!walking) { ctx.translate(0, -28 * sc); ctx.rotate(r.rot); ctx.translate(0, 28 * sc); }
+  ctx.scale(sc * dir, sc);
   ctx.translate(0, -bob);
+  if (r.kind === 'joker') drawJoker(r, sw, fz);
+  else if (r.kind === 'bush') drawBush(r, sw, fz);
+  else if (r.kind === 'water') drawWater(r, sw, fz);
+  else drawVolt(r, sw, fz, r.kind === 'volt2');
+  if (r.flash > 0) { ctx.fillStyle = 'rgba(255,255,255,.55)'; ell(3, -30, 17, 34); ctx.fill(); }          // мигнул при попадании
+  if (!walking) { ctx.fillStyle = 'rgba(170,230,255,.4)'; ell(3, -30, 17, 33); ctx.fill(); }              // замёрз во льду
+  ctx.restore();
+  if (walking && r.max > 1) {                                                                           // «жизни» над головой
+    for (let i = 0; i < r.max; i++) {
+      ctx.fillStyle = i < r.hp ? '#ff5c7a' : 'rgba(255,255,255,.28)';
+      ctx.beginPath(); ctx.arc(x - (r.max - 1) * 5 + i * 10, y + hop - 66 * sc, 3.2, 0, 7); ctx.fill();
+    }
+  }
+}
+
+// электрик в стиле Мегавольта; v2 — «силач»: красный костюм, оранжевые волосы, шипы на плечах, шар побольше
+function drawVolt(r, sw, fz, v2) {
+  const C = v2
+    ? { legA: '#5a1f24', legB: '#7a2a30', arm: '#6b2630', arm2: '#a63a3a', suitA: '#8a2a32', suitB: '#c0484f', hair: '#ff9a3d', belt: '#2a1014',
+        o0: 'rgba(255,230,200,.95)', o1: 'rgba(255,140,90,.55)', o2: 'rgba(255,140,90,0)', spark: '#ffe2c8', k: 1.3 }
+    : { legA: '#203a52', legB: '#2a4a68', arm: '#1e3a52', arm2: '#2f6890', suitA: '#2d5a7c', suitB: '#3d7aa3', hair: '#ffe44d', belt: '#17283a',
+        o0: 'rgba(190,250,255,.95)', o1: 'rgba(110,225,255,.55)', o2: 'rgba(110,225,255,0)', spark: '#d4f8ff', k: 1 };
 
   // ноги: бедро вверху, ботинок внизу (идёт на задних ногах)
   const leg = (dx, a, col) => {
@@ -523,8 +704,8 @@ function drawRat(r) {
     ctx.fillStyle = '#1f2338'; rr(-3.6, 9.5, 10, 7, 3.2); ctx.fill();
     ctx.restore();
   };
-  leg(-2, -sw * .65, '#203a52');
-  leg(3, sw * .65, '#2a4a68');
+  leg(-2, -sw * .65, C.legA);
+  leg(3, sw * .65, C.legB);
 
   // ранец-батарея со светящейся лампочкой
   ctx.fillStyle = '#8b909c'; rr(-15, -34, 8, 17, 2.5); ctx.fill();
@@ -533,17 +714,22 @@ function drawRat(r) {
 
   // дальняя рука (качается)
   ctx.save(); ctx.translate(-3, -31); ctx.rotate(.25 + sw * .7);
-  ctx.fillStyle = '#1e3a52'; rr(-2.6, 0, 5.2, 12, 2.6); ctx.fill();
+  ctx.fillStyle = C.arm; rr(-2.6, 0, 5.2, 12, 2.6); ctx.fill();
   ctx.fillStyle = '#ffd22e'; ctx.beginPath(); ctx.arc(0, 13, 3.6, 0, 7); ctx.fill();
   ctx.restore();
 
-  // тело: тёмно-синий прорезиненный костюм и жёлтая молния
+  // тело: прорезиненный костюм и жёлтая молния
   const tg = ctx.createLinearGradient(-9, 0, 10, 0);
-  tg.addColorStop(0, '#2d5a7c'); tg.addColorStop(1, '#3d7aa3');
+  tg.addColorStop(0, C.suitA); tg.addColorStop(1, C.suitB);
   ctx.fillStyle = tg; rr(-9, -35, 19, 21, 7); ctx.fill();
   ctx.fillStyle = '#ffd22e'; ctx.beginPath();
   ctx.moveTo(3, -32); ctx.lineTo(-3, -23.5); ctx.lineTo(.5, -23.5); ctx.lineTo(-2, -16); ctx.lineTo(6, -26); ctx.lineTo(2, -26); ctx.lineTo(5, -32); ctx.closePath(); ctx.fill();
-  ctx.fillStyle = '#17283a'; ctx.fillRect(-9, -18, 19, 2.6);                // пояс
+  ctx.fillStyle = C.belt; ctx.fillRect(-9, -18, 19, 2.6);                // пояс
+  if (v2) {                                                              // шипы на плечах
+    ctx.fillStyle = '#d9d9e6';
+    ctx.beginPath(); ctx.moveTo(-9, -33); ctx.lineTo(-7, -42); ctx.lineTo(-3, -34); ctx.closePath(); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(10, -33); ctx.lineTo(9, -42); ctx.lineTo(4, -34); ctx.closePath(); ctx.fill();
+  }
 
   // кабель от ранца к руке с зарядом
   ctx.strokeStyle = '#1b1d28'; ctx.lineWidth = 1.8; ctx.lineCap = 'round';
@@ -551,23 +737,23 @@ function drawRat(r) {
 
   // ближняя рука поднята и держит шар-заряд
   ctx.save(); ctx.translate(6, -31); ctx.rotate(-2.3 + sw * .08);
-  ctx.fillStyle = '#2f6890'; rr(-2.8, 0, 5.6, 12, 2.8); ctx.fill();
+  ctx.fillStyle = C.arm2; rr(-2.8, 0, 5.6, 12, 2.8); ctx.fill();
   ctx.fillStyle = '#ffd22e'; ctx.beginPath(); ctx.arc(0, 13, 3.8, 0, 7); ctx.fill();
   ctx.restore();
-  const ox = 19, oy = -46 + fz * .6;
-  const og = ctx.createRadialGradient(ox, oy, 1, ox, oy, 12);
-  og.addColorStop(0, 'rgba(190,250,255,.95)'); og.addColorStop(.45, 'rgba(110,225,255,.55)'); og.addColorStop(1, 'rgba(110,225,255,0)');
-  ctx.fillStyle = og; ctx.beginPath(); ctx.arc(ox, oy, 12, 0, 7); ctx.fill();
-  ctx.fillStyle = '#f2feff'; ctx.beginPath(); ctx.arc(ox, oy, 3.4, 0, 7); ctx.fill();
+  const ox = 19, oy = -46 + fz * .6, k = C.k;
+  const og = ctx.createRadialGradient(ox, oy, 1, ox, oy, 12 * k);
+  og.addColorStop(0, C.o0); og.addColorStop(.45, C.o1); og.addColorStop(1, C.o2);
+  ctx.fillStyle = og; ctx.beginPath(); ctx.arc(ox, oy, 12 * k, 0, 7); ctx.fill();
+  ctx.fillStyle = '#fffdf6'; ctx.beginPath(); ctx.arc(ox, oy, 3.4 * k, 0, 7); ctx.fill();
   if (fz > -.3) {
-    ctx.strokeStyle = '#d4f8ff'; ctx.lineWidth = 1.2; ctx.beginPath();
+    ctx.strokeStyle = C.spark; ctx.lineWidth = 1.2; ctx.beginPath();
     ctx.moveTo(ox + 3, oy - 3); ctx.lineTo(ox + 8, oy - 7); ctx.lineTo(ox + 6, oy - 9); ctx.lineTo(ox + 11, oy - 12);
     ctx.moveTo(ox - 3, oy + 3); ctx.lineTo(ox - 7, oy + 7); ctx.lineTo(ox - 5, oy + 9); ctx.stroke();
   }
 
   // вздыбленные электрические волосы
-  const j = k => Math.sin(t * 22 + k + r.o) * 1.5;
-  ctx.fillStyle = '#ffe44d'; ctx.beginPath();
+  const j = q => Math.sin(t * 22 + q + r.o) * 1.5;
+  ctx.fillStyle = C.hair; ctx.beginPath();
   ctx.moveTo(-5, -47); ctx.lineTo(-8, -56 + j(1)); ctx.lineTo(-3, -52); ctx.lineTo(-2, -63 + j(2)); ctx.lineTo(2.5, -53);
   ctx.lineTo(6, -64 + j(3)); ctx.lineTo(8.5, -53); ctx.lineTo(13, -60 + j(4)); ctx.lineTo(12, -48); ctx.closePath(); ctx.fill();
   // голова: серая мордочка, уши, нос, гоглы, брови
@@ -582,9 +768,177 @@ function drawRat(r) {
   ctx.strokeStyle = '#2a2d44'; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(15, -38.3); ctx.lineTo(10, -38.8); ctx.stroke();   // рот
   ctx.strokeStyle = 'rgba(30,30,50,.55)'; ctx.lineWidth = .8;
   ctx.beginPath(); ctx.moveTo(15, -41); ctx.lineTo(22, -43); ctx.moveTo(15, -40.2); ctx.lineTo(22, -39); ctx.stroke();   // усы
+}
 
-  if (!walking) { ctx.fillStyle = 'rgba(170,230,255,.4)'; ell(3, -30, 17, 33); ctx.fill(); }   // замёрз во льду
+// шутник: колпак с бубенчиками, костюм-арлекин, широкая улыбка, мячи-прыгуны
+function drawJoker(r, sw, fz) {
+  const leg = (dx, a, col) => {
+    ctx.save(); ctx.translate(dx, -17); ctx.rotate(a);
+    ctx.fillStyle = col; rr(-3.2, 0, 6.4, 12, 3); ctx.fill();
+    ctx.fillStyle = '#4b2a8a'; rr(-3.6, 9.5, 11, 7, 3.5); ctx.fill();
+    ctx.fillStyle = '#ffd23f'; ctx.beginPath(); ctx.arc(7.6, 11.5, 2.2, 0, 7); ctx.fill();    // бубенчик на носке
+    ctx.restore();
+  };
+  leg(-2, -sw * .65, '#e23b5a'); leg(3, sw * .65, '#ffd23f');
+  // дальняя рука
+  ctx.save(); ctx.translate(-3, -31); ctx.rotate(.3 + sw * .7);
+  ctx.fillStyle = '#c92f4d'; rr(-2.6, 0, 5.2, 12, 2.6); ctx.fill();
+  ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(0, 13, 3.7, 0, 7); ctx.fill();
   ctx.restore();
+  // костюм: красное и жёлтое «арлекино»
+  ctx.fillStyle = '#e23b5a'; rr(-9, -35, 19, 21, 7); ctx.fill();
+  ctx.fillStyle = '#ffd23f'; ctx.beginPath(); ctx.moveTo(.5, -34); ctx.lineTo(8, -25); ctx.lineTo(.5, -16); ctx.lineTo(-7, -25); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = '#5b2aa0'; ctx.beginPath(); ctx.arc(.5, -25, 2.2, 0, 7); ctx.fill();
+  // воротник-жабо
+  ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.moveTo(-9, -36);
+  for (let i = 0; i < 6; i++) { ctx.lineTo(-9 + i * 3.4 + 1.7, -31); ctx.lineTo(-9 + (i + 1) * 3.4, -36); }
+  ctx.closePath(); ctx.fill();
+  // ближняя рука поднята и держит мяч-прыгун
+  ctx.save(); ctx.translate(6, -31); ctx.rotate(-2.2 + sw * .08);
+  ctx.fillStyle = '#c92f4d'; rr(-2.8, 0, 5.6, 12, 2.8); ctx.fill();
+  ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(0, 13, 3.9, 0, 7); ctx.fill();
+  ctx.restore();
+  const bx = 17, by = -48;
+  ctx.fillStyle = '#ff4d6d'; ctx.beginPath(); ctx.arc(bx, by, 6.5, 0, 7); ctx.fill();
+  ctx.fillStyle = '#ffd23f'; ctx.beginPath(); ctx.arc(bx, by, 6.5, .4, 1.9); ctx.lineTo(bx, by); ctx.fill();
+  ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(bx - 2, by - 2, 1.6, 0, 7); ctx.fill();
+  // голова
+  fillEll('#f6e6d4', 4, -44, 9, 9);
+  fillEll('#f28b9b', 0, -41.5, 2.6, 1.8); fillEll('#f28b9b', 9, -41, 2.4, 1.8);              // румянец
+  fillEll('#e02848', 11.5, -43, 2.8, 2.6);                                                   // красный нос
+  fillEll('#fff', 7, -46.5, 2.5, 2.6); fillEll('#1a1426', 7.8, -46.3, 1.3, 1.4);
+  fillEll('#fff', .8, -46.5, 2.3, 2.5); fillEll('#1a1426', 1.5, -46.3, 1.2, 1.3);
+  ctx.strokeStyle = '#1a1426'; ctx.lineWidth = 1.5; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.arc(5, -41, 5.2, .25, Math.PI - .25); ctx.stroke();                   // широкая улыбка
+  ctx.lineWidth = 1.3; ctx.beginPath(); ctx.moveTo(-1.5, -51); ctx.lineTo(3, -49.8); ctx.moveTo(5, -49.8); ctx.lineTo(9.5, -51.2); ctx.stroke();
+  // колпак с двумя рожками и бубенчиками
+  ctx.fillStyle = '#e23b5a'; ctx.beginPath(); ctx.moveTo(-4, -50); ctx.quadraticCurveTo(-10, -58, -17, -55 + sw * 1.5); ctx.quadraticCurveTo(-8, -52, -4, -46); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = '#ffd23f'; ctx.beginPath(); ctx.moveTo(4, -52); ctx.quadraticCurveTo(7, -63, 17, -66 - sw * 1.5); ctx.quadraticCurveTo(11, -57, 11, -50); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = '#5b2aa0'; rr(-4, -53, 15, 5, 2); ctx.fill();
+  ctx.fillStyle = '#ffd23f'; ctx.beginPath(); ctx.arc(-17, -55 + sw * 1.5, 2.6, 0, 7); ctx.fill();
+  ctx.fillStyle = '#e23b5a'; ctx.beginPath(); ctx.arc(17, -66 - sw * 1.5, 2.6, 0, 7); ctx.fill();
+}
+
+// живой куст: здоровяк из листьев и корней, жёлтые глаза, красный цветок
+function drawBush(r, sw, fz) {
+  const leg = (dx, a) => {
+    ctx.save(); ctx.translate(dx, -16); ctx.rotate(a);
+    ctx.fillStyle = '#6b4a2a'; rr(-4, 0, 8, 12, 3); ctx.fill(); fillEll('#4e3520', 2, 14, 7, 3);
+    ctx.restore();
+  };
+  leg(-3, -sw * .55); leg(4, sw * .55);
+  // дальняя рука-лоза
+  ctx.strokeStyle = '#2f6a2a'; ctx.lineWidth = 5; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(-4, -30); ctx.quadraticCurveTo(-12, -24 + sw * 4, -10 - sw * 5, -14); ctx.stroke();
+  // тело из кустистых листьев
+  fillEll('#256022', 0, -22, 13, 10); fillEll('#2f6a2a', -2, -29, 13, 11); fillEll('#3f8a35', 4, -31, 10, 9); fillEll('#56a844', 6, -34, 6, 5);
+  // листья-шипы по краю
+  ctx.fillStyle = '#1f5a22';
+  for (let i = 0; i < 7; i++) {
+    const a = -2.9 + i * .55, rx = -1 + Math.cos(a) * 13, ry = -28 + Math.sin(a) * 13;
+    ctx.beginPath(); ctx.moveTo(rx, ry); ctx.lineTo(rx + Math.cos(a) * 6, ry + Math.sin(a) * 6); ctx.lineTo(rx + Math.cos(a + 1) * 4, ry + Math.sin(a + 1) * 4); ctx.closePath(); ctx.fill();
+  }
+  // ближняя рука поднята: лоза с шипастым кулаком
+  ctx.strokeStyle = '#2f6a2a'; ctx.lineWidth = 5;
+  ctx.beginPath(); ctx.moveTo(6, -31); ctx.quadraticCurveTo(16, -34, 20 + sw * 1.5, -46); ctx.stroke();
+  fillEll('#3f8a35', 21 + sw * 1.5, -48, 5, 5);
+  ctx.fillStyle = '#7a3a2a';
+  for (let i = 0; i < 4; i++) { const a = i * 1.57; ctx.beginPath(); ctx.arc(21 + sw * 1.5 + Math.cos(a) * 5.5, -48 + Math.sin(a) * 5.5, 1.5, 0, 7); ctx.fill(); }
+  // голова
+  fillEll('#4f9a3a', 5, -44, 9.5, 8.5);
+  fillEll('#ffe85a', 9, -45, 2.6, 2.2); fillEll('#ffe85a', 2.5, -45, 2.2, 2); fillEll('#2a1a10', 9.6, -45, 1.1, 1.8); fillEll('#2a1a10', 3, -45, 1, 1.7);
+  ctx.strokeStyle = '#1a3a10'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(1, -49); ctx.lineTo(5, -47.5); ctx.moveTo(6, -47.5); ctx.lineTo(11.5, -49.5); ctx.stroke();
+  ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.moveTo(3, -39);
+  for (let i = 0; i < 4; i++) { ctx.lineTo(3 + i * 2.6 + 1.3, -36.5); ctx.lineTo(3 + (i + 1) * 2.6, -39); }
+  ctx.closePath(); ctx.fill();                                                               // зубастый рот
+  // листовой «ирокез» и красный цветок
+  ctx.fillStyle = '#2f6a2a';
+  for (let i = 0; i < 5; i++) {
+    ctx.beginPath(); ctx.moveTo(-2 + i * 3.6, -49);
+    ctx.quadraticCurveTo(-4 + i * 3.6, -58 - (i % 2) * 3 + fz * .5, i * 3.6, -60 - (i % 2) * 3);
+    ctx.quadraticCurveTo(3 + i * 3.6, -55, 2 + i * 3.6, -49); ctx.closePath(); ctx.fill();
+  }
+  ctx.fillStyle = '#ff4d6d';
+  for (let i = 0; i < 5; i++) { const a = i * 1.257; ctx.beginPath(); ctx.arc(6 + Math.cos(a) * 3.2, -60 + Math.sin(a) * 3.2, 2.4, 0, 7); ctx.fill(); }
+  ctx.fillStyle = '#ffd23f'; ctx.beginPath(); ctx.arc(6, -60, 1.8, 0, 7); ctx.fill();
+}
+
+// водяной пёс: прозрачно-голубой, висячие уши, капли и лужа под ногами
+function drawWater(r, sw, fz) {
+  const wob = Math.sin(t * 6 + r.o);
+  ctx.globalAlpha = .92;
+  ctx.fillStyle = 'rgba(70,150,230,.35)'; ell(0, 1, 15, 3); ctx.fill();                       // лужа
+  const leg = (dx, a, col) => {
+    ctx.save(); ctx.translate(dx, -17); ctx.rotate(a);
+    ctx.fillStyle = col; rr(-3.4, 0, 6.8, 13, 3.4); ctx.fill(); fillEll(col, 3, 15.5, 6, 3);
+    ctx.restore();
+  };
+  leg(-2, -sw * .7, '#2f78d8'); leg(3, sw * .7, '#4a98f0');
+  // дальняя рука
+  ctx.save(); ctx.translate(-3, -31); ctx.rotate(.3 + sw * .8);
+  ctx.fillStyle = '#2f78d8'; rr(-2.8, 0, 5.6, 13, 2.8); ctx.fill(); fillEll('#4a98f0', 0, 14, 4, 4);
+  ctx.restore();
+  // тело-вода с бликами
+  const bg = ctx.createLinearGradient(0, -36, 0, -14); bg.addColorStop(0, '#7fd0ff'); bg.addColorStop(1, '#2c6fd6');
+  ctx.fillStyle = bg; rr(-9.5, -36, 20, 22, 8); ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,.45)'; rr(-5, -33, 3, 12, 1.5); ctx.fill(); rr(1, -31, 2, 7, 1); ctx.fill();
+  // ближняя рука вперёд
+  ctx.save(); ctx.translate(7, -30); ctx.rotate(-1.7 + sw * .1);
+  ctx.fillStyle = '#4a98f0'; rr(-3, 0, 6, 13, 3); ctx.fill(); fillEll('#7fd0ff', 0, 14, 4.5, 4.5);
+  ctx.restore();
+  // голова-пёс: висячие уши, морда, нос
+  ctx.save(); ctx.translate(-1, -44); ctx.rotate(.3 + wob * .06); fillEll('#2f78d8', 0, 6, 4, 9); ctx.restore();     // дальнее ухо
+  fillEll('#5ab0ff', 4, -44, 9.5, 8.5);
+  fillEll('#8fd0ff', 12, -41.5, 6, 4.2); fillEll('#143a78', 17.5, -42.2, 2, 1.7);
+  fillEll('#fff', 8.8, -46, 2.8, 2.9); fillEll('#0e2a5a', 9.6, -45.8, 1.5, 1.7);
+  ctx.strokeStyle = '#143a78'; ctx.lineWidth = 1.4; ctx.beginPath(); ctx.moveTo(5.5, -50); ctx.lineTo(12, -48.4); ctx.stroke();
+  ctx.save(); ctx.translate(7, -45); ctx.rotate(.2 - wob * .07); fillEll('#2f78d8', 0, 8, 4.2, 10); ctx.restore();      // ближнее ухо
+  ctx.fillStyle = 'rgba(255,255,255,.5)'; ell(2, -48, 3, 1.6); ctx.fill();
+  // капли
+  ctx.fillStyle = 'rgba(160,220,255,.8)';
+  for (let i = 0; i < 4; i++) { const p2 = (t * 1.3 + i / 4 + r.o * .01) % 1; ctx.beginPath(); ctx.arc(-10 + i * 7, -34 + p2 * 34, 1.6 * (1 - p2 * .4), 0, 7); ctx.fill(); }
+  ctx.globalAlpha = 1;
+}
+
+// вражеские «пули»: искра, мяч-прыгун, семечко
+function drawEBullet(b) {
+  if (b.k === 'spark') {
+    const g = ctx.createRadialGradient(b.x, b.y, 1, b.x, b.y, 11);
+    g.addColorStop(0, 'rgba(255,235,190,.95)'); g.addColorStop(.5, 'rgba(255,150,90,.6)'); g.addColorStop(1, 'rgba(255,150,90,0)');
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(b.x, b.y, 11, 0, 7); ctx.fill();
+    ctx.strokeStyle = '#fff3d8'; ctx.lineWidth = 1.5; ctx.beginPath();
+    ctx.moveTo(b.x - 9, b.y - 2); ctx.lineTo(b.x - 4, b.y + 3); ctx.lineTo(b.x, b.y - 3); ctx.lineTo(b.x + 5, b.y + 2); ctx.stroke();
+  } else if (b.k === 'ball') {
+    ctx.save(); ctx.translate(b.x, b.y); ctx.rotate(t * 8);
+    ctx.fillStyle = '#ff4d6d'; ctx.beginPath(); ctx.arc(0, 0, 6.5, 0, 7); ctx.fill();
+    ctx.fillStyle = '#ffd23f'; ctx.beginPath(); ctx.arc(0, 0, 6.5, .4, 1.9); ctx.lineTo(0, 0); ctx.fill();
+    ctx.fillStyle = '#5b2aa0'; ctx.beginPath(); ctx.arc(0, 0, 6.5, 3.5, 4.9); ctx.lineTo(0, 0); ctx.fill();
+    ctx.restore();
+  } else {
+    ctx.fillStyle = '#6aa83a'; ell(b.x, b.y, 5, 3, t * 5); ctx.fill();
+    ctx.fillStyle = '#2f6a2a'; ell(b.x - 2, b.y, 2.5, 1.6, t * 5); ctx.fill();
+  }
+}
+
+// флажок и портал в конце уровня
+function drawGoal() {
+  if (!goal) return;
+  const fx = goal.roof.x + goal.o, fy = goal.roof.y, cy = fy - 38;
+  if (fx < -80 || fx > W + 80) return;
+  const pl = .5 + .5 * Math.sin(t * 4);
+  const g = ctx.createRadialGradient(fx, cy, 4, fx, cy, 60);
+  g.addColorStop(0, 'rgba(190,160,255,' + (.45 + .2 * pl) + ')'); g.addColorStop(1, 'rgba(190,160,255,0)');
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(fx, cy, 60, 0, 7); ctx.fill();
+  ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(214,196,255,.95)'; ell(fx, cy, 15 + pl * 2, 40); ctx.stroke();           // кольцо портала
+  ctx.strokeStyle = 'rgba(143,227,255,.9)'; ctx.lineWidth = 2;
+  for (let i = 0; i < 3; i++) { const a = t * 3 + i * 2.1; ctx.beginPath(); ctx.ellipse(fx, cy, 9, 30, 0, a, a + 1.1); ctx.stroke(); }
+  const p0 = fx - 34;                                                                                              // флагшток слева от портала
+  ctx.fillStyle = '#e8e8f4'; rr(p0 - 1.5, fy - 84, 3, 84, 1.5); ctx.fill();
+  ctx.fillStyle = '#ffcc33'; ctx.beginPath(); ctx.arc(p0, fy - 86, 4, 0, 7); ctx.fill();
+  const wv = Math.sin(t * 5) * 3;
+  ctx.fillStyle = '#ff4d6d'; ctx.beginPath();
+  ctx.moveTo(p0 + 1.5, fy - 82); ctx.quadraticCurveTo(p0 + 18, fy - 80 + wv, p0 + 32, fy - 72 + wv * 1.3);
+  ctx.quadraticCurveTo(p0 + 18, fy - 66 + wv, p0 + 1.5, fy - 58); ctx.closePath(); ctx.fill();
 }
 
 /* ---------- Пингвин ---------- */
@@ -594,6 +948,10 @@ function drawPenguin() {
   const air = !P.grounded;
   ctx.save();
   ctx.translate(x, P.y - bob);
+  if (state === 'portal') {                                        // крутится и уменьшается
+    const pf = Math.max(0, 1 - portalT / 1.1);
+    ctx.translate(0, -20); ctx.rotate(portalT * 9); ctx.scale(pf, pf); ctx.translate(0, 20);
+  }
   if (hurtT > 0 && Math.floor(t * 12) % 2 === 0) ctx.globalAlpha = .45;
   ctx.scale(.9 * (1 + P.squash * .1), .9 * (1 - P.squash * .1));
   const tilt = air ? Math.max(-.2, Math.min(.28, P.vy / 1800)) : 0;
@@ -664,9 +1022,11 @@ function draw() {
   ctx.setTransform(K, 0, 0, K, 0, 0);
   drawBackground();
   drawRoofs();
+  drawGoal();
   coinsList.forEach(c => { if (c.x < W + 20) drawCoin(c); });
   rats.forEach(drawRat);
   drawPenguin();
+  ebullets.forEach(drawEBullet);
   balls.forEach(b => {
     const g = ctx.createRadialGradient(b.x, b.y, 1, b.x, b.y, 9);
     g.addColorStop(0, '#ffffff'); g.addColorStop(.55, '#e6f8ff'); g.addColorStop(1, 'rgba(180,230,255,0)');
@@ -679,17 +1039,23 @@ function draw() {
   ctx.globalAlpha = 1;
 
   // интерфейс (HUD)
-  drawCoin({ x: 22, y: 22 });
+  const L = LEVELS[lvl];
+  const prog = Math.min(1, dist / (L.len * 20));
+  ctx.fillStyle = 'rgba(255,255,255,.14)'; ctx.fillRect(0, 0, W, 5);                        // полоска: сколько уровня пройдено
+  ctx.fillStyle = '#ffcc33'; ctx.fillRect(0, 0, W * prog, 5);
+  ctx.fillStyle = '#ff4d6d'; ctx.fillRect(W - 4, 0, 4, 5);                                   // флажок в конце
+  drawCoin({ x: 22, y: 27 });
   ctx.textAlign = 'left'; ctx.font = 'bold 17px system-ui, sans-serif'; ctx.fillStyle = '#fff';
-  ctx.fillText(coins, 38, 28);
-  ctx.font = '13px system-ui, sans-serif'; ctx.fillStyle = 'rgba(255,255,255,.85)';
-  ctx.fillText(Math.floor(dist / 20) + ' м', 90, 28);
-  ctx.textAlign = 'right'; ctx.fillText('Рекорд: ' + best + ' м', W - 12, 28);
+  ctx.fillText(coins, 38, 33);
+  ctx.textAlign = 'center'; ctx.font = 'bold 13px system-ui, sans-serif'; ctx.fillStyle = '#ffe9a8';
+  ctx.fillText('Уровень ' + (lvl + 1) + ' из ' + LEVELS.length, W / 2, 31);
+  ctx.textAlign = 'right'; ctx.font = '12px system-ui, sans-serif'; ctx.fillStyle = 'rgba(255,255,255,.85)';
+  ctx.fillText('Рекорд: ' + best + ' м', W - 12, 31);
   const bw = Math.min(210, W - 24), pr = humanProgress();
   ctx.textAlign = 'left'; ctx.font = '11px system-ui, sans-serif'; ctx.fillStyle = 'rgba(255,255,255,.8)';
-  ctx.fillText(humanDone ? '✓ Вы не робот!' : 'Проверка: вы человек? ' + Math.round(pr * 100) + '%', 12, 50);
-  ctx.fillStyle = 'rgba(255,255,255,.2)'; rr(12, 56, bw, 7, 3.5); ctx.fill();
-  ctx.fillStyle = humanDone ? '#5be08a' : '#ffcc33'; if (pr > 0) { rr(12, 56, Math.max(7, bw * pr), 7, 3.5); ctx.fill(); }
+  ctx.fillText(humanDone ? '✓ Вы не робот!' : 'Проверка: вы человек? ' + Math.round(pr * 100) + '%', 12, 54);
+  ctx.fillStyle = 'rgba(255,255,255,.2)'; rr(12, 60, bw, 7, 3.5); ctx.fill();
+  ctx.fillStyle = humanDone ? '#5be08a' : '#ffcc33'; if (pr > 0) { rr(12, 60, Math.max(7, bw * pr), 7, 3.5); ctx.fill(); }
 
   if (bannerT > 0) {
     ctx.globalAlpha = Math.min(1, bannerT);
@@ -698,6 +1064,24 @@ function draw() {
     ctx.fillStyle = '#d6ffe4'; ctx.font = '13px system-ui, sans-serif'; ctx.fillText('Проверка пройдена. Можно играть дальше 🙂', W / 2, 127);
     ctx.globalAlpha = 1;
   }
+  if (state !== 'ready' && lvlBannerT > 0) {                       // табличка «Уровень N — злодей»
+    ctx.globalAlpha = Math.min(1, lvlBannerT, (4.5 - lvlBannerT) * 3);
+    ctx.fillStyle = 'rgba(8,6,24,.62)'; rr(W / 2 - 150, 150, 300, 86, 16); ctx.fill();
+    ctx.textAlign = 'center'; ctx.fillStyle = '#ffcc33'; ctx.font = 'bold 13px system-ui, sans-serif'; ctx.fillText('УРОВЕНЬ ' + (lvl + 1), W / 2, 174);
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 22px system-ui, sans-serif'; ctx.fillText(L.name, W / 2, 200);
+    ctx.fillStyle = 'rgba(255,255,255,.8)'; ctx.font = '12px system-ui, sans-serif'; ctx.fillText(L.info, W / 2, 222);
+    ctx.globalAlpha = 1;
+  }
+  if (state === 'end') {                                           // финал: экран белеет, страница закрывается
+    const f = Math.min(1, endT / 1.5), a2 = Math.min(1, Math.max(0, (endT - .8) / .6));
+    ctx.fillStyle = 'rgba(255,255,255,' + f + ')'; ctx.fillRect(0, 0, W, H);
+    ctx.globalAlpha = a2; ctx.textAlign = 'center';
+    ctx.fillStyle = '#16233b'; ctx.font = 'bold 24px system-ui, sans-serif'; ctx.fillText('Спасибо за игру! 🏆', W / 2, H / 2 - 10);
+    ctx.fillStyle = '#51607a'; ctx.font = '14px system-ui, sans-serif'; ctx.fillText('Страница закроется…', W / 2, H / 2 + 18);
+    ctx.globalAlpha = 1;
+  }
+  if (state === 'portal') { ctx.fillStyle = 'rgba(235,225,255,' + Math.min(1, Math.max(0, (portalT - .9) / .5)) + ')'; ctx.fillRect(0, 0, W, H); }
+  if (fadeT > 0) { ctx.fillStyle = 'rgba(235,225,255,' + fadeT / .5 + ')'; ctx.fillRect(0, 0, W, H); }
 
   if (state === 'ready') {
     ctx.fillStyle = 'rgba(6,8,22,.55)'; ctx.fillRect(0, 0, W, H);
@@ -712,7 +1096,7 @@ function draw() {
       ctx.fillText('D — бежать быстрее,  A — притормозить', W / 2, 174);
       ctx.fillText('F или клик мышью — снежок', W / 2, 198);
     }
-    ctx.fillText('Собирай монетки. Проиграть нельзя!', W / 2, 228);
+    ctx.fillText('Собирай монетки и добирайся до флажка!', W / 2, 228);
     ctx.fillStyle = 'rgba(255,255,255,.7)'; ctx.font = '13px system-ui, sans-serif';
     ctx.fillText(isTouch ? 'Нажми любую кнопку внизу' : 'Нажми пробел', W / 2, 256);
   }
@@ -720,8 +1104,8 @@ function draw() {
 
 /* ---------- Управление: кнопки на экране + клавиатура ---------- */
 function startIfReady() { if (state === 'ready') state = 'play'; }
-const pressJump = () => { if (!active) return; startIfReady(); jumpHeld = true; tryJump(); };
-const pressShoot = () => { if (!active) return; startIfReady(); shootHeld = true; };
+const pressJump = () => { if (!active || state === 'portal' || state === 'end') return; startIfReady(); jumpHeld = true; tryJump(); };
+const pressShoot = () => { if (!active || state === 'portal' || state === 'end') return; startIfReady(); shootHeld = true; };
 const releaseJump = () => { jumpHeld = false; };
 const releaseShoot = () => { shootHeld = false; };
 
@@ -759,7 +1143,10 @@ addEventListener('pointerup', () => { if (!isTouch) releaseShoot(); });
 let last = 0;
 function frame(ts) {
   const dt = Math.min(.033, (ts - last) / 1000 || 0); last = ts;
-  if (active) { update(dt); draw(); }
+  if (active) {
+    try { update(dt); draw(); }
+    catch (e) { if (!frame.err) { frame.err = 1; console.error(e); } }   // ошибка одного кадра не должна останавливать игру
+  }
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
