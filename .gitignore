@@ -2,3 +2,15 @@ __pycache__/
 *.pyc
 .vercel
 .env*.local
+.env
+.env.*
+!.env.example
+node_modules/
+.next/
+.godot/
+*.lock
+*.log
+.vercel/
+Thumbs.db
+*.key
+*.pem

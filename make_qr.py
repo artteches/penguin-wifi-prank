@@ -51,12 +51,23 @@ def box(tris, x0, y0, z0, x1, y1, z1):
         tris.append((v[a], v[c], v[d]))
 
 
+def normal(a, b, c):
+    """Единичная нормаль треугольника (куда смотрит его лицевая сторона)."""
+    ux, uy, uz = b[0] - a[0], b[1] - a[1], b[2] - a[2]
+    vx, vy, vz = c[0] - a[0], c[1] - a[1], c[2] - a[2]
+    nx, ny, nz = uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx
+    ln = (nx * nx + ny * ny + nz * nz) ** 0.5 or 1.0
+    return nx / ln, ny / ln, nz / ln
+
+
 def write_stl(path, tris, name):
+    """Двоичный (binary) STL. Нормали обязательно настоящие: с нулевыми нормалями
+    Anycubic Slicer Next принимал файл за текстовый STL и не открывал его."""
     with open(path, "wb") as f:
-        f.write(name.encode()[:80].ljust(80, b" "))
+        f.write(name.encode()[:80].ljust(80, b"\x00"))
         f.write(struct.pack("<I", len(tris)))
         for a, b, c in tris:
-            f.write(struct.pack("<12fH", 0, 0, 0, *a, *b, *c, 0))
+            f.write(struct.pack("<12fH", *normal(a, b, c), *a, *b, *c, 0))
 
 
 def volume(tris):
@@ -83,25 +94,29 @@ def mesh_xml(tris):
 
 
 def write_3mf(path, parts, title):
-    """Один файл 3MF с несколькими деталями-цветами (для многоцветной печати).
+    """Один файл 3MF: ОДНА деталь (сборка, assembly) из нескольких частей-цветов.
 
-    parts — список словарей: name, tris, material, color (#RRGGBB), extruder (1, 2, ...).
-    Цвета лежат в basematerials (их понимают слайсеры), а Metadata/model_settings.config
-    подсказывает Bambu Studio / Orca, какой филамент (extruder) чей.
+    Если положить части отдельными объектами, слайсер опускает каждую на стол сама по себе,
+    и квадратики вылезают из основы. Поэтому части собраны в один объект через <components>,
+    а Metadata/model_settings.config говорит Anycubic Slicer Next / Bambu / Orca, какой филамент у какой части.
     """
     mats = "".join(f'<base name="{escape(p["material"])}" displaycolor="{p["color"]}FF"/>' for p in parts)
     objs = "".join(
         f'<object id="{i + 2}" type="model" pid="1" pindex="{i}" name="{escape(p["name"])}">{mesh_xml(p["tris"])}</object>'
         for i, p in enumerate(parts))
-    items = "".join(f'<item objectid="{i + 2}"/>' for i in range(len(parts)))
+    top = len(parts) + 2                                     # номер объекта-сборки
+    comps = "".join(f'<component objectid="{i + 2}"/>' for i in range(len(parts)))
     model = ('<?xml version="1.0" encoding="UTF-8"?>'
              '<model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">'
              f'<metadata name="Title">{escape(title)}</metadata>'
-             f'<resources><basematerials id="1">{mats}</basematerials>{objs}</resources>'
-             f'<build>{items}</build></model>')
-    settings = ('<?xml version="1.0" encoding="UTF-8"?><config>' + "".join(
-        f'<object id="{i + 2}"><metadata key="name" value="{escape(p["name"])}"/>'
-        f'<metadata key="extruder" value="{p["extruder"]}"/></object>' for i, p in enumerate(parts)) + '</config>')
+             f'<resources><basematerials id="1">{mats}</basematerials>{objs}'
+             f'<object id="{top}" type="model" name="QR"><components>{comps}</components></object></resources>'
+             f'<build><item objectid="{top}"/></build></model>')
+    settings = ('<?xml version="1.0" encoding="UTF-8"?><config>'
+                f'<object id="{top}"><metadata key="name" value="QR"/><metadata key="extruder" value="1"/>' + "".join(
+                    f'<part id="{i + 2}" subtype="normal_part"><metadata key="name" value="{escape(p["name"])}"/>'
+                    f'<metadata key="extruder" value="{p["extruder"]}"/></part>' for i, p in enumerate(parts))
+                + '</object></config>')
     content_types = ('<?xml version="1.0" encoding="UTF-8"?>'
                      '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
                      '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
